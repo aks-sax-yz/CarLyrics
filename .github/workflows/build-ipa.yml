@@ -1,0 +1,76 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-ipa:
+    name: Build unsigned IPA
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      # project.yml is the source of truth; generate so the CarLyrics scheme
+      # (including LyricsWidgetExtension) exists. The committed xcodeproj has no shared schemes.
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned app
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project CarLyrics.xcodeproj \
+            -scheme CarLyrics \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" \
+            | xcbeautify --renderer github-actions
+
+      - name: Package IPA
+        run: |
+          set -euo pipefail
+          PRODUCTS="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos"
+          APP="$PRODUCTS/CarLyrics.app"
+          if [[ ! -d "$APP" ]]; then
+            echo "CarLyrics.app not found under $PRODUCTS" >&2
+            ls -la "$PRODUCTS" || true
+            find "$RUNNER_TEMP/DerivedData/Build/Products" -name "*.app" -o -name "*.appex" >&2 || true
+            exit 1
+          fi
+          echo "App bundle:"
+          ls -la "$APP"
+          echo "Embedded PlugIns (widget extension, if present):"
+          ls -la "$APP/PlugIns" || echo "No PlugIns directory"
+          WORK="$RUNNER_TEMP/ipa"
+          rm -rf "$WORK"
+          mkdir -p "$WORK/Payload"
+          cp -R "$APP" "$WORK/Payload/"
+          # ditto preserves resource forks / Finder info better than zip for .app bundles
+          ditto -c -k --sequesterRsrc --keepParent "$WORK/Payload" "$GITHUB_WORKSPACE/CarLyrics.ipa"
+          ls -lh "$GITHUB_WORKSPACE/CarLyrics.ipa"
+          # Sanity-check the zip layout SideStore expects
+          unzip -l "$GITHUB_WORKSPACE/CarLyrics.ipa"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: CarLyrics.ipa
+          path: CarLyrics.ipa
+          if-no-files-found: error
