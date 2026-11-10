@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
   build-ipa:
     name: Build unsigned IPA
@@ -27,6 +30,27 @@ jobs:
       - name: Generate Xcode project
         run: xcodegen generate
 
+      - name: Read version from project.yml
+        id: version
+        run: |
+          set -euo pipefail
+          MARKETING_VERSION=$(sed -n 's/.*MARKETING_VERSION: "\([^"]*\)"/\1/p' project.yml | head -1)
+          MIN_OS_VERSION=$(python3 -c '
+          import re, pathlib
+          text = pathlib.Path("project.yml").read_text()
+          m = re.search(r"deploymentTarget:\s*\n\s*iOS:\s*\"([^\"]+)\"", text)
+          if not m:
+              raise SystemExit("Could not read iOS deployment target from project.yml")
+          print(m.group(1))
+          ')
+          BUILD_VERSION="${{ github.run_number }}"
+          TAG="v${MARKETING_VERSION}-${BUILD_VERSION}"
+          echo "marketing_version=${MARKETING_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_version=${BUILD_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "min_os_version=${MIN_OS_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Using marketing=${MARKETING_VERSION} build=${BUILD_VERSION} tag=${TAG} minOS=${MIN_OS_VERSION}"
+
       - name: Build unsigned app
         run: |
           set -euo pipefail
@@ -36,6 +60,8 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            MARKETING_VERSION="${{ steps.version.outputs.marketing_version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.version.outputs.build_version }}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -74,3 +100,79 @@ jobs:
           name: CarLyrics.ipa
           path: CarLyrics.ipa
           if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          MARKETING_VERSION: ${{ steps.version.outputs.marketing_version }}
+          BUILD_VERSION: ${{ steps.version.outputs.build_version }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "Car Lyrics ${MARKETING_VERSION} (${BUILD_VERSION})" \
+            --notes "Unsigned IPA for SideStore / AltStore. Marketing version ${MARKETING_VERSION}, build ${BUILD_VERSION}." \
+            "CarLyrics.ipa#CarLyrics.ipa"
+
+      - name: Update SideStore source (apps.json)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+          MARKETING_VERSION: ${{ steps.version.outputs.marketing_version }}
+          BUILD_VERSION: ${{ steps.version.outputs.build_version }}
+          MIN_OS_VERSION: ${{ steps.version.outputs.min_os_version }}
+        run: |
+          set -euo pipefail
+          IPA_SIZE=$(wc -c < "$GITHUB_WORKSPACE/CarLyrics.ipa" | tr -d ' ')
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/CarLyrics.ipa"
+          RELEASE_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          export IPA_SIZE DOWNLOAD_URL RELEASE_DATE MARKETING_VERSION BUILD_VERSION MIN_OS_VERSION
+          python3 << 'PY'
+          import json, os
+          from pathlib import Path
+
+          path = Path("apps.json")
+          data = json.loads(path.read_text())
+          entry = {
+              "version": os.environ["MARKETING_VERSION"],
+              "buildVersion": os.environ["BUILD_VERSION"],
+              "date": os.environ["RELEASE_DATE"],
+              "localizedDescription": f"Build {os.environ['BUILD_VERSION']} (unsigned IPA for SideStore).",
+              "downloadURL": os.environ["DOWNLOAD_URL"],
+              "size": int(os.environ["IPA_SIZE"]),
+              "minOSVersion": os.environ["MIN_OS_VERSION"],
+          }
+          app = data["apps"][0]
+          versions = list(app.get("versions") or [])
+          already = any(
+              str(v.get("version")) == entry["version"]
+              and str(v.get("buildVersion")) == entry["buildVersion"]
+              for v in versions
+          )
+          if not already:
+              app["versions"] = [entry] + versions
+          else:
+              app["versions"] = versions
+          # SideStore still expects a top-level downloadURL on the app entry.
+          latest = app["versions"][0]
+          app["downloadURL"] = latest["downloadURL"]
+          app["version"] = latest["version"]
+          app["versionDate"] = latest["date"]
+          app["size"] = latest["size"]
+          path.write_text(json.dumps(data, indent=2) + "\n")
+          print(f"Prepended version {entry['version']} ({entry['buildVersion']}) size={entry['size']}")
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps.json
+          if git diff --staged --quiet; then
+            echo "apps.json already up to date"
+            exit 0
+          fi
+          git commit -m "Update SideStore source for ${TAG} [skip ci]"
+          git pull --rebase origin main
+          git push origin HEAD:main

@@ -1,0 +1,30 @@
+{
+  "name": "Car Lyrics",
+  "identifier": "com.akshatsaxena01.carlyrics",
+  "developerName": "Akshat Saxena",
+  "subtitle": "Synced lyrics on CarPlay via Live Activities.",
+  "description": "A SideStore source for Car Lyrics. New unsigned builds are published automatically from the main branch.",
+  "website": "https://github.com/aks-sax-yz/CarLyrics",
+  "apps": [
+    {
+      "name": "Car Lyrics",
+      "bundleIdentifier": "com.akshatsaxena01.carlyrics",
+      "developerName": "Akshat Saxena",
+      "subtitle": "Time-synced lyrics on CarPlay and the lock screen.",
+      "localizedDescription": "Detects the song playing on your iPhone (Apple Music or Spotify) and shows time-synced lyrics on the CarPlay widgets screen and the lock screen via a Live Activity. No CarPlay entitlement is required.",
+      "tintColor": "#1DB954",
+      "category": "entertainment",
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {
+          "NSAppleMusicUsageDescription": "Car Lyrics reads what's playing in the Music app to show synced lyrics.",
+          "NSMicrophoneUsageDescription": "Used only if you enable Shazam-style recognition for other apps.",
+          "NSLocationWhenInUseUsageDescription": "Keeps Car Lyrics running so lyrics keep advancing on CarPlay and the lock screen. Your location isn't recorded or shared.",
+          "NSLocationAlwaysAndWhenInUseUsageDescription": "Keeps Car Lyrics running in the background so lyrics keep advancing on CarPlay and the lock screen. Your location isn't recorded or shared."
+        }
+      },
+      "versions": []
+    }
+  ],
+  "news": []
+}
