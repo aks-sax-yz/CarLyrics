@@ -64,10 +64,14 @@ struct LyricsSmallView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("\(state.title) — \(state.artist)")
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.6))
-                .lineLimit(1)
+            HStack(spacing: 4) {
+                Text("\(state.title) — \(state.artist)")
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                SongTime(state: state)
+            }
+            .font(.caption2)
+            .foregroundStyle(.white.opacity(0.6))
             Text(state.currentLine.isEmpty ? "♪ ♪ ♪" : state.currentLine)
                 .font(.title3.weight(.bold))
                 .foregroundStyle(.white)
@@ -106,8 +110,58 @@ struct LyricsLockScreenView: View {
                     .foregroundStyle(.white.opacity(0.55))
                     .lineLimit(1)
             }
+            if state.durationMs != nil {
+                HStack(spacing: 8) {
+                    SongProgress(state: state)
+                    SongTime(state: state)
+                }
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.6))
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
+    }
+}
+
+/// "1:23 / 3:54". While playing, the elapsed part is a SwiftUI timer that ticks on its own —
+/// the app pushes only on line changes, never once a second. Hidden when the length is unknown.
+struct SongTime: View {
+    let state: LyricsActivityAttributes.ContentState
+
+    var body: some View {
+        if let durationMs = state.durationMs, durationMs > 0 {
+            let total = Self.clock(durationMs)
+            if let start = state.songStart {
+                Text("\(Text(timerInterval: start...start.addingTimeInterval(Double(durationMs) / 1000), countsDown: false)) / \(total)")
+                    .monospacedDigit()
+            } else {
+                Text("\(Self.clock(state.pausedPositionMs ?? 0)) / \(total)")
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    static func clock(_ ms: Int) -> String {
+        Duration.milliseconds(ms).formatted(.time(pattern: .minuteSecond))
+    }
+}
+
+/// Song progress bar; runs live from `songStart` like `SongTime`, static while paused.
+struct SongProgress: View {
+    let state: LyricsActivityAttributes.ContentState
+
+    var body: some View {
+        if let durationMs = state.durationMs, durationMs > 0 {
+            Group {
+                if let start = state.songStart {
+                    ProgressView(timerInterval: start...start.addingTimeInterval(Double(durationMs) / 1000),
+                                 countsDown: false) { EmptyView() } currentValueLabel: { EmptyView() }
+                } else {
+                    ProgressView(value: Double(min(state.pausedPositionMs ?? 0, durationMs)), total: Double(durationMs))
+                }
+            }
+            .tint(.white)
+        }
     }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import AuthenticationServices
 import CarLyricsCore
 
@@ -79,16 +80,27 @@ final class SpotifyController: NSObject, ObservableObject {
     func poll() async throws -> PlaybackState {
         guard var current = tokens else { throw AuthError.notLoggedIn }
         if current.isExpired(now: Date()) {
-            current = try await client.refresh(current)
-            tokens = current
+            current = try await refreshed(current)
         }
         do {
             return try await client.currentlyPlaying(accessToken: current.accessToken)
         } catch SpotifyClient.SpotifyError.unauthorized {
             // Access token rejected — refresh once and retry.
-            let refreshed = try await client.refresh(current)
-            tokens = refreshed
-            return try await client.currentlyPlaying(accessToken: refreshed.accessToken)
+            let fresh = try await refreshed(current)
+            return try await client.currentlyPlaying(accessToken: fresh.accessToken)
+        }
+    }
+
+    /// A rejected refresh token means the login is gone: drop it so the UI offers "Connect
+    /// Spotify" again, instead of retrying a dead token every poll while showing the last song.
+    private func refreshed(_ current: SpotifyTokens) async throws -> SpotifyTokens {
+        do {
+            let fresh = try await client.refresh(current)
+            tokens = fresh
+            return fresh
+        } catch SpotifyClient.SpotifyError.unauthorized {
+            tokens = nil
+            throw SpotifyClient.SpotifyError.unauthorized
         }
     }
 
@@ -110,6 +122,9 @@ final class SpotifyController: NSObject, ObservableObject {
 
 extension SpotifyController: ASWebAuthenticationPresentationContextProviding {
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        ASPresentationAnchor()
+        // The app's real key window; a detached `ASPresentationAnchor()` has no scene on iOS 26+.
+        UIApplication.shared.connectedScenes
+            .compactMap { ($0 as? UIWindowScene)?.keyWindow }
+            .first ?? ASPresentationAnchor()
     }
 }

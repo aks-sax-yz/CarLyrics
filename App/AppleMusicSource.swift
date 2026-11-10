@@ -5,44 +5,23 @@ import CarLyricsCore
 /// Reads now-playing from the system Music app (Apple Music / local library) via
 /// MediaPlayer. This only ever sees the Music app — never Spotify — which is an Apple
 /// platform limitation, not a bug. Requires `NSAppleMusicUsageDescription`.
+/// The coordinator polls `sampleNow()` every tick, so no change notifications are observed.
 @MainActor
-final class AppleMusicSource: ObservableObject {
-    @Published private(set) var state: PlaybackState?
-
+final class AppleMusicSource {
     private let player = MPMusicPlayerController.systemMusicPlayer
-    private var observing = false
+    private var started = false
 
     func start() {
         MPMediaLibrary.requestAuthorization { _ in }
-        guard !observing else { return }
-        observing = true
+        guard !started else { return }
+        started = true
+        // ponytail: kept from the observer version — not proven necessary for fresh reads in the
+        // background, and dropping it mid-investigation of the widget freeze would add a variable.
         player.beginGeneratingPlaybackNotifications()
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(refresh),
-            name: .MPMusicPlayerControllerNowPlayingItemDidChange, object: player)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(refresh),
-            name: .MPMusicPlayerControllerPlaybackStateDidChange, object: player)
-        refresh()
     }
 
-    func stop() {
-        guard observing else { return }
-        observing = false
-        player.endGeneratingPlaybackNotifications()
-        NotificationCenter.default.removeObserver(self)
-    }
-
-    /// Read the current position on demand (position isn't pushed via notifications).
+    /// Read the current track + position on demand (position isn't pushed via notifications).
     func sampleNow() -> PlaybackState? {
-        buildState()
-    }
-
-    @objc private func refresh() {
-        state = buildState()
-    }
-
-    private func buildState() -> PlaybackState? {
         guard let item = player.nowPlayingItem else { return nil }
         // MediaPlayer returns NaN/non-finite times when nothing is loaded; `Int(NaN)` traps.
         let duration = item.playbackDuration

@@ -95,3 +95,26 @@ final class LRCParserTests: XCTestCase {
         XCTAssertFalse(LRCParser.parse("").isSynced)
     }
 }
+
+final class LRCLibSearchRankingTests: XCTestCase {
+    private func r(_ synced: String?, plain: String? = nil, duration: Double?) -> LRCLibClient.Response {
+        LRCLibClient.Response(id: nil, trackName: nil, artistName: nil, albumName: nil,
+                              duration: duration, instrumental: nil, plainLyrics: plain, syncedLyrics: synced)
+    }
+
+    func testPrefersSyncedOverEarlierPlainResult() {
+        let best = LRCLibClient.bestMatch([r(nil, plain: "words", duration: 200), r("[00:01.00]x", duration: 200)], durationMs: 200_000)
+        XCTAssertEqual(best?.syncedLyrics, "[00:01.00]x")
+    }
+
+    func testPrefersClosestDurationAmongSynced() {
+        let best = LRCLibClient.bestMatch([r("[00:01.00]live", duration: 260), r("[00:01.00]album", duration: 241)], durationMs: 240_000)
+        XCTAssertEqual(best?.syncedLyrics, "[00:01.00]album")
+    }
+
+    func testSkipsResultsWithoutLyricsAndKeepsApiOrderOnTies() {
+        XCTAssertNil(LRCLibClient.bestMatch([r(nil, duration: 200), r("", plain: "", duration: 200)], durationMs: nil))
+        let best = LRCLibClient.bestMatch([r("[00:01.00]first", duration: 100), r("[00:01.00]second", duration: 300)], durationMs: nil)
+        XCTAssertEqual(best?.syncedLyrics, "[00:01.00]first")
+    }
+}

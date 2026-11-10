@@ -12,7 +12,7 @@ struct CarLyricsApp: App {
                 .onAppear { coordinator.start() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { coordinator.appBecameActive() }
+            coordinator.scenePhaseChanged(phase)
         }
     }
 }

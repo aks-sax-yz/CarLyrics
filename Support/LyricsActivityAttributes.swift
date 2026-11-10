@@ -16,8 +16,17 @@ struct LyricsActivityAttributes: ActivityAttributes {
         /// The upcoming line, shown dimmed for read-ahead. Nil at end of song.
         var nextLine: String?
         var isPlaying: Bool
+        /// Song length; nil when the source doesn't know it (Listen/Shazam) — the time row hides.
+        var durationMs: Int? = nil
+        /// Playing: the wall-clock moment the song started (now − position). The widget's
+        /// `Text(timerInterval:)` / `ProgressView(timerInterval:)` then tick live with no push per
+        /// second. Held steady by the app, so it only changes on seek / song change.
+        var songStart: Date? = nil
+        /// Paused: the frozen position (whole seconds), shown statically.
+        var pausedPositionMs: Int? = nil
     }
 
-    /// Stable per-song identity so the system coalesces same-song updates.
+    /// The song the activity was started for. Informational only: one activity is reused across
+    /// songs (ContentState carries the current title), because a backgrounded app can't start one.
     var songId: String
 }

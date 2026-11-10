@@ -44,7 +44,8 @@ project.yml        xcodegen project definition
 ## Setup (one time)
 
 1. **Install xcodegen** (already present on this machine): `brew install xcodegen`
-2. **Generate the Xcode project:**
+2. **Generate the Xcode project** (`CarLyrics.xcodeproj` and `Generated/` are build outputs of
+   `project.yml` and are gitignored — regenerate after every pull or source-tree change):
    ```
    cd CarLyricsClone && xcodegen generate && open CarLyrics.xcodeproj
    ```
@@ -88,7 +89,7 @@ A real iPhone off the corp Wi-Fi doesn't need this.
 ## Verifying
 
 ```bash
-# Pure-logic tests (30 tests: parser, sync math, PKCE, Spotify decode, cache) — runs on macOS
+# Pure-logic tests (parser, sync math, PKCE, Spotify decode, cache, search ranking) — runs on macOS
 cd CarLyricsCore && swift test
 
 # Full app + widget compile for the simulator
@@ -98,6 +99,25 @@ cd .. && xcodebuild -project CarLyrics.xcodeproj -scheme CarLyrics \
 ```
 CarPlay itself is testable in the Simulator via **I/O › External Displays › CarPlay** (no
 entitlement required).
+
+## When the widget freezes
+
+Opening the app replaces the Live Activity with a fresh one, so a frozen widget recovers without
+clearing it or force-quitting. To see *why* it froze, read the diagnostics row before anything else:
+
+- `live activity: active … sys=ok` while the widget is stuck → iOS accepted every update but
+  stopped drawing them.
+- `sys=BEHIND` → iOS is dropping the updates.
+- `ended` / `dismissed` / `none` → iOS ended the activity, and a backgrounded app can't start a
+  new one.
+- a new `gaps >3s` entry → the app itself was suspended.
+
+The full timeline (song changes, CarPlay connects, activity state changes, a heartbeat every 30s) is
+in `Documents/events.log` on the phone:
+```bash
+xcrun devicectl device copy from --device <iphone-id> --domain-type appDataContainer \
+  --domain-identifier com.akshatsaxena01.carlyrics --source Documents/events.log --destination .
+```
 
 ## Limitations & honest notes
 

@@ -32,9 +32,7 @@ public enum LRCParser {
 
             // One LyricsLine per time stamp (handles repeated-line stamps).
             for ms in stamps {
-                lines.append(LyricsLine(timeMs: ms, text: cleanText, words: words.isEmpty ? nil : words.map {
-                    LyricsLine.Word(timeMs: $0.timeMs + 0, text: $0.text)
-                }))
+                lines.append(LyricsLine(timeMs: ms, text: cleanText, words: words.isEmpty ? nil : words))
             }
         }
 

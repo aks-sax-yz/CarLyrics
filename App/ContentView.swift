@@ -1,8 +1,10 @@
 import SwiftUI
+import AuthenticationServices
 import CarLyricsCore
 
 struct ContentView: View {
     @EnvironmentObject var coordinator: NowPlayingCoordinator
+    @State private var spotifyError: String?
 
     var body: some View {
         NavigationStack {
@@ -108,6 +110,8 @@ struct ContentView: View {
             Text("location callback: \(locationUpdateAge) · activity attempts: \(coordinator.activityUpdateAttempts)")
             Text("CarPlay: \(coordinator.isCarPlayConnected ? "connected" : "disconnected") · launch requires Shortcuts automation")
             Text("last activity attempt: \(activityAttemptAge) · gaps >3s: \(coordinator.tickGapEvents.count)")
+            // Read this when the widget looks frozen: see LiveActivityController.healthSummary.
+            Text("live activity: \(coordinator.activityHealth)")
             if let latest = coordinator.tickGapEvents.last {
                 Text("latest gap: \(String(format: "%.1f", latest.gap))s at \(latest.timestamp.formatted(date: .abbreviated, time: .standard))")
             }
@@ -150,11 +154,25 @@ struct ContentView: View {
             }
         } else {
             Button {
-                Task { try? await coordinator.spotify.login() }
+                Task {
+                    do {
+                        try await coordinator.spotify.login()
+                        spotifyError = nil
+                    } catch ASWebAuthenticationSessionError.canceledLogin {
+                        spotifyError = nil // user closed the sheet — not an error
+                    } catch {
+                        spotifyError = "Spotify login failed: \(error.localizedDescription)"
+                    }
+                }
             } label: {
                 Label("Connect Spotify", systemImage: "music.note.list")
             }
             .buttonStyle(.borderedProminent)
+            if let spotifyError {
+                Text(spotifyError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
         }
     }
 }

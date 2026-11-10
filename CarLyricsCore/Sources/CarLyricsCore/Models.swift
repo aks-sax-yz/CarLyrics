@@ -89,7 +89,7 @@ public struct TimedLyrics: Equatable, Codable, Sendable {
     public var lines: [LyricsLine]
     /// False for plain (unsynced) lyrics — every line has timeMs 0 and we can't karaoke.
     public var isSynced: Bool
-    /// Global offset in ms from the `[offset:]` LRC tag (positive shifts lyrics later).
+    /// Global offset in ms from the `[offset:]` LRC tag (positive makes lyrics appear sooner).
     public var offsetMs: Int
 
     public init(lines: [LyricsLine], isSynced: Bool, offsetMs: Int = 0) {

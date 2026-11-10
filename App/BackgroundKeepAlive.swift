@@ -28,14 +28,6 @@ final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
     private(set) var lastError: String?
 
     var authorizationStatus: CLAuthorizationStatus { manager.authorizationStatus }
-    var isPlaying: Bool {
-        Self.isEffective(
-            authorization: authorizationStatus,
-            hasBackgroundSession: backgroundSession != nil,
-            lastLocationUpdate: lastLocationUpdate,
-            now: Date()
-        )
-    }
     var status: Status {
         Self.currentStatus(
             authorization: authorizationStatus,
@@ -106,15 +98,6 @@ final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
         backgroundSession?.invalidate()
         backgroundSession = nil
         startLocationUpdatesIfAuthorized()
-    }
-
-    func stop() {
-        guard running else { return }
-        running = false
-        manager.stopUpdatingLocation()
-        manager.allowsBackgroundLocationUpdates = false
-        backgroundSession?.invalidate()
-        backgroundSession = nil
     }
 
     private func startLocationUpdatesIfAuthorized() {

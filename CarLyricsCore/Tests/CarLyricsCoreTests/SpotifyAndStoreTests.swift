@@ -107,6 +107,12 @@ final class LyricsStoreTests: XCTestCase {
         XCTAssertEqual(loaded, lyrics)
     }
 
+    func testCacheFileNameIsStableAcrossLaunches() {
+        // Must not depend on Swift's per-process-seeded hashValue, or the cache misses every launch.
+        let name = tempStore().fileURL(for: "queen|bohemian rhapsody|354").lastPathComponent
+        XCTAssertEqual(name, "86a42d7f0dc6afb6a3755965797854a0c0d84b57256993f57fa78dc7f5042652.json")
+    }
+
     func testIdentityKeyIgnoresSource() {
         // Same song from Apple Music and Spotify shares a cache entry.
         let apple = NowPlayingTrack(title: "Song", artist: "Artist", durationMs: 200_000, source: .appleMusic)

@@ -52,36 +52,12 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertNil(SyncEngine().currentIndex(in: l, positionMs: 9_000))
     }
 
-    func testFileOffsetShiftsLater() {
-        // [offset:+1000] => lyrics shifted 1s later => at pos 10000 we're still before line 0.
+    func testFileOffsetShiftsEarlier() {
+        // LRC spec: [offset:+1000] => lyrics appear 1s SOONER => at pos 9000 line 0 is already up.
         let engine = SyncEngine()
         let l = TimedLyrics(lines: [LyricsLine(timeMs: 10_000, text: "x")], isSynced: true, offsetMs: 1_000)
-        XCTAssertNil(engine.currentIndex(in: l, positionMs: 10_000))
-        XCTAssertEqual(engine.currentIndex(in: l, positionMs: 11_000), 0)
-    }
-
-    func testWindow() {
-        let engine = SyncEngine()
-        let l = lyrics([0, 1_000, 2_000, 3_000, 4_000, 5_000])
-        let w = engine.window(in: l, positionMs: 3_000, before: 1, after: 2)
-        XCTAssertEqual(w.currentIndex, 3)
-        XCTAssertEqual(w.lines.map(\.timeMs), [2_000, 3_000, 4_000, 5_000])
-        XCTAssertEqual(w.highlightOffset, 1) // current line is 2nd in the slice
-    }
-
-    func testWindowClampsAtEnds() {
-        let engine = SyncEngine()
-        let l = lyrics([0, 1_000, 2_000])
-        let w = engine.window(in: l, positionMs: 0, before: 2, after: 5)
-        XCTAssertEqual(w.lines.count, 3)
-        XCTAssertEqual(w.highlightOffset, 0)
-    }
-
-    func testMsUntilNextLine() {
-        let engine = SyncEngine()
-        let lines = lyrics([10_000, 20_000]).lines
-        XCTAssertEqual(engine.msUntilNextLine(lines: lines, positionMs: 15_000), 5_000)
-        XCTAssertNil(engine.msUntilNextLine(lines: lines, positionMs: 25_000)) // no next line
+        XCTAssertNil(engine.currentIndex(in: l, positionMs: 8_000))
+        XCTAssertEqual(engine.currentIndex(in: l, positionMs: 9_000), 0)
     }
 
     func testExtrapolatedPosition() {

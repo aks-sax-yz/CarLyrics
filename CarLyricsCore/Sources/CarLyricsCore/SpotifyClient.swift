@@ -80,9 +80,17 @@ public struct SpotifyClient: Sendable {
     let tokenEndpoint: URL
     let apiBase: URL
 
+    /// The coordinator's 1s tick awaits these calls, so a stalled request must fail in seconds,
+    /// not URLSession's 60s default (which froze Apple Music + the Live Activity in Auto mode).
+    public static let defaultSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 5
+        return URLSession(configuration: config)
+    }()
+
     public init(
         auth: SpotifyAuth,
-        session: URLSession = .shared,
+        session: URLSession = SpotifyClient.defaultSession,
         tokenEndpoint: URL = URL(string: "https://accounts.spotify.com/api/token")!,
         apiBase: URL = URL(string: "https://api.spotify.com/v1")!
     ) {
@@ -139,7 +147,8 @@ public struct SpotifyClient: Sendable {
         let (data, resp) = try await session.data(for: req)
         guard let http = resp as? HTTPURLResponse else { throw SpotifyError.badResponse(status: -1) }
         guard http.statusCode == 200 else {
-            if http.statusCode == 401 { throw SpotifyError.unauthorized }
+            // The token endpoint answers a revoked/expired refresh token with 400 invalid_grant.
+            if http.statusCode == 400 || http.statusCode == 401 { throw SpotifyError.unauthorized }
             throw SpotifyError.badResponse(status: http.statusCode)
         }
         return try JSONDecoder().decode(TokenResponse.self, from: data)

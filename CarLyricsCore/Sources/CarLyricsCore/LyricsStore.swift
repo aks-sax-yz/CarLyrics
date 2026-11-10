@@ -1,9 +1,7 @@
 import Foundation
+import CryptoKit
 
-/// On-disk cache of parsed lyrics keyed by track identity. Foundation-only so it works in
-/// the app, the widget extension, and macOS tests. Stores JSON in a directory (defaults to
-/// caches); pass an App Group container URL in the app so the widget can read what the app
-/// fetched.
+/// On-disk cache of parsed lyrics keyed by track identity, stored as JSON files in a directory.
 public struct LyricsStore: Sendable {
     let directory: URL
 
@@ -18,13 +16,11 @@ public struct LyricsStore: Sendable {
         return LyricsStore(directory: base.appendingPathComponent("CarLyricsCache", isDirectory: true))
     }
 
-    private func fileURL(for key: String) -> URL {
-        // Hash the identity key to a filesystem-safe filename.
-        let safe = key.unicodeScalars.reduce(into: "") { acc, scalar in
-            acc.append(scalar.properties.isAlphabetic || ("0"..."9").contains(Character(scalar)) ? Character(scalar) : "_")
-        }
-        let hashed = String(UInt64(bitPattern: Int64(key.hashValue)))
-        return directory.appendingPathComponent("\(safe.prefix(40))_\(hashed).json")
+    /// SHA256 of the key: filesystem-safe and identical across launches. (`hashValue` is seeded
+    /// per process, which made every relaunch miss the cache.)
+    func fileURL(for key: String) -> URL {
+        let hex = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent("\(hex).json")
     }
 
     public func load(key: String) -> TimedLyrics? {

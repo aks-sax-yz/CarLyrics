@@ -26,7 +26,7 @@ public struct LRCLibClient: Sendable {
 
     public init(
         baseURL: URL = URL(string: "https://lrclib.net")!,
-        userAgent: String = "CarLyricsClone/1.0 (https://github.com/personal/carlyricsclone)",
+        userAgent: String = "CarLyrics/1.0 (https://github.com/aks-sax-yz/CarLyrics)",
         session: URLSession = LRCLibClient.defaultSession
     ) {
         self.baseURL = baseURL
@@ -36,9 +36,12 @@ public struct LRCLibClient: Sendable {
 
     /// Short per-request timeout so a stalled lookup fails fast to the search fallback instead
     /// of hanging on URLSession's 60s default (the "lyrics show up half the song later" bug).
+    /// `waitsForConnectivity` rides out a tunnel; the resource cap makes it eventually fail so the
+    /// coordinator's retry can take over (the default cap is 7 days).
     public static let defaultSession: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 30
         config.waitsForConnectivity = true
         return URLSession(configuration: config)
     }()
@@ -59,8 +62,8 @@ public struct LRCLibClient: Sendable {
         return try toLyrics(response)
     }
 
-    /// Fuzzy search fallback when exact `get` misses. Returns the first result with lyrics.
-    public func search(track: String, artist: String) async throws -> TimedLyrics {
+    /// Fuzzy search fallback when exact `get` misses. Picks the best result (see `bestMatch`).
+    public func search(track: String, artist: String, durationMs: Int? = nil) async throws -> TimedLyrics {
         var comps = URLComponents(url: baseURL.appendingPathComponent("api/search"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [
             URLQueryItem(name: "track_name", value: track),
@@ -72,10 +75,21 @@ public struct LRCLibClient: Sendable {
         guard let http = resp as? HTTPURLResponse else { throw LRCLibError.badResponse(status: -1) }
         guard http.statusCode == 200 else { throw LRCLibError.badResponse(status: http.statusCode) }
         let results = try JSONDecoder().decode([Response].self, from: data)
-        guard let first = results.first(where: { ($0.syncedLyrics ?? $0.plainLyrics)?.isEmpty == false }) else {
-            throw LRCLibError.notFound
+        guard let best = Self.bestMatch(results, durationMs: durationMs) else { throw LRCLibError.notFound }
+        return try toLyrics(best)
+    }
+
+    /// Synced beats plain (plain can't drive the Live Activity), then closest duration (a live or
+    /// remix cut has different timings). Ties keep LRCLIB's order.
+    static func bestMatch(_ results: [Response], durationMs: Int?) -> Response? {
+        func rank(_ r: Response) -> (Int, Double) {
+            let synced = r.syncedLyrics?.isEmpty == false ? 0 : 1
+            guard let durationMs, let d = r.duration else { return (synced, 0) }
+            return (synced, abs(d - Double(durationMs) / 1000))
         }
-        return try toLyrics(first)
+        return results
+            .filter { $0.syncedLyrics?.isEmpty == false || $0.plainLyrics?.isEmpty == false }
+            .min { rank($0) < rank($1) }
     }
 
     /// Try exact get, then fall back to search. The path the app actually calls.
@@ -86,7 +100,7 @@ public struct LRCLibClient: Sendable {
             // artist + duration is LRCLIB's effective signature and hits on the first request.
             return try await get(track: track.title, artist: track.artist, durationMs: track.durationMs)
         } catch {
-            return try await search(track: track.title, artist: track.artist)
+            return try await search(track: track.title, artist: track.artist, durationMs: track.durationMs)
         }
     }
 

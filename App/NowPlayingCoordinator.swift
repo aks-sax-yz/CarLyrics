@@ -1,12 +1,13 @@
 import Foundation
 import AVFAudio
+import SwiftUI
 import CarLyricsCore
 
 /// The brain: samples the active source, fetches + caches lyrics on song change, runs the
 /// SyncEngine every tick, publishes state for the in-app UI, and pushes the Live Activity
 /// that renders on CarPlay.
 @MainActor
-final class NowPlayingCoordinator: NSObject, ObservableObject {
+final class NowPlayingCoordinator: ObservableObject {
     enum SourceMode: String, CaseIterable, Identifiable {
         case auto, appleMusic, spotify, shazam
         #if targetEnvironment(simulator)
@@ -29,6 +30,7 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
     @Published var sourceMode: SourceMode = .auto {
         didSet {
             guard oldValue != sourceMode else { return }
+            EventLog.log("mode \(sourceMode.rawValue)")
             // Auto may have implicitly turned on the mic — drop that when leaving Auto.
             if oldValue == .auto { setAutoListening(false) }
             // Shazam holds the mic open — only listen while its mode is actually selected.
@@ -44,7 +46,9 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
     @Published private(set) var track: NowPlayingTrack?
     @Published private(set) var lyrics: TimedLyrics?
     @Published private(set) var currentLineIndex: Int?
-    @Published private(set) var status: String = "Idle"
+    @Published private(set) var status: String = "Idle" {
+        didSet { if status != oldValue { EventLog.log("status \(status)") } }
+    }
     /// Diagnostics for the background-freeze investigation: the largest gap (seconds) seen
     /// between consecutive ticks. If the app is suspended in the background, the tick after it
     /// resumes records a big gap → proves suspension. Stays ~1s if it never suspended.
@@ -54,6 +58,7 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
     @Published private(set) var isCarPlayConnected = false
     @Published private(set) var activityUpdateAttempts = 0
     @Published private(set) var lastActivityUpdateAttempt: Date?
+    @Published private(set) var activityHealth = ""
     @Published private(set) var tickGapEvents: [TickGapEvent] = []
     private var lastTickWallClock: Date?
 
@@ -101,6 +106,11 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
     private var spotifyAnchor: PlaybackState?
     private var loopTask: Task<Void, Never>?
     private var lyricsFetchToken = UUID()
+    /// Set after a network/HTTP failure so the current song's lyrics are retried, not given up on.
+    private var lyricsRetryAt: Date?
+    private var wasInBackground = false
+    private var lastHeartbeat = Date.distantPast
+    private var songStartAnchor: Date?
 
     private static let offsetKey = "sync.userOffsetMs"
     private static let tickGapsKey = "diagnostics.tickGaps"
@@ -108,10 +118,11 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
     private static let spotifyPollInterval: TimeInterval = 3
     private static let significantTickGap: TimeInterval = 3
     private static let maxStoredTickGaps = 8
+    private static let lyricsRetryDelay: TimeInterval = 15
+    private static let heartbeatInterval: TimeInterval = 30
 
-    override init() {
+    init() {
         userOffsetMs = UserDefaults.standard.integer(forKey: Self.offsetKey)
-        super.init()
         engine.userOffsetMs = userOffsetMs
         if let data = UserDefaults.standard.data(forKey: Self.tickGapsKey),
            let stored = try? JSONDecoder().decode([TickGapEvent].self, from: data) {
@@ -131,13 +142,15 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
         keepAlive.start() // location keep-alive runs in every mode, independent of the mic
         handleCarPlayRouteChange()
         guard loopTask == nil else { return }
+        EventLog.log("app start mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
         // Observer only once — start() can re-run from SwiftUI onAppear without meaning "restart".
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(audioRouteChanged),
-            name: AVAudioSession.routeChangeNotification,
-            object: nil
-        )
+        // Block observer on the main queue: AVAudioSession can post route changes off the main
+        // thread, and a selector into this @MainActor class would trip Swift 6's isolation check.
+        _ = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleCarPlayRouteChange() }
+        }
         loopTask = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.tick()
@@ -146,19 +159,22 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
         }
     }
 
-    func appBecameActive() {
-        keepAlive.appBecameActive()
-    }
-
-    func stop() {
-        NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
-        loopTask?.cancel()
-        loopTask = nil
-        autoListening = false
-        appleMusic.stop()
-        shazamSource.stop()
-        keepAlive.stop()
-        Task { await liveActivity.endCurrent() }
+    /// Becoming active swaps in a fresh Live Activity if the current one is a leftover or has
+    /// been through the background — so a frozen widget recovers just by opening the app (no
+    /// clearing it, no force-quit). See `LiveActivityController.restart()`.
+    func scenePhaseChanged(_ phase: ScenePhase) {
+        EventLog.log("phase \(phase)")
+        switch phase {
+        case .active:
+            keepAlive.appBecameActive()
+            Task { await liveActivity.restart(); refreshActivityDiagnostics() }
+            wasInBackground = false
+        case .background:
+            wasInBackground = true
+            liveActivity.appEnteredBackground()
+        default:
+            break
+        }
     }
 
     nonisolated static func shouldEndActivity(wasCarPlayConnected: Bool, isCarPlayConnected: Bool) -> Bool {
@@ -169,16 +185,13 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
         AVAudioSession.sharedInstance().currentRoute.outputs.contains { $0.portType == .carAudio }
     }
 
-    @objc private func audioRouteChanged() {
-        handleCarPlayRouteChange()
-    }
-
     private func handleCarPlayRouteChange() {
         let connected = Self.currentRouteHasCarPlay
         let shouldEnd = Self.shouldEndActivity(
             wasCarPlayConnected: isCarPlayConnected,
             isCarPlayConnected: connected
         )
+        if connected != isCarPlayConnected { EventLog.log("carplay \(connected ? "connected" : "disconnected")") }
         isCarPlayConnected = connected
         UserDefaults.standard.set(connected, forKey: Self.carPlayKey)
         if shouldEnd {
@@ -196,9 +209,12 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
             if gap > Self.significantTickGap { recordTickGap(gap, at: now) }
         }
         lastTickWallClock = now
-        keepAliveStatus = keepAlive.status
+        let keepAliveNow = keepAlive.status
+        if keepAliveNow != keepAliveStatus { EventLog.log("keep-alive \(keepAliveNow)") }
+        keepAliveStatus = keepAliveNow
         lastLocationUpdate = keepAlive.lastLocationUpdate
         refreshActivityDiagnostics()
+        heartbeatIfDue(now)
 
         guard let playback = await resolvePlayback() else {
             missCount += 1
@@ -209,7 +225,10 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
 
         if playback.track.isDifferentSong(from: track) {
             track = playback.track
+            EventLog.log("song \"\(playback.track.title)\" — \(playback.track.artist) [\(playback.track.source.rawValue)]")
             loadLyrics(for: playback.track) // non-blocking: fetch runs async, loop keeps ticking
+        } else if let retryAt = lyricsRetryAt, now >= retryAt {
+            loadLyrics(for: playback.track)
         }
         lastPlayback = playback
 
@@ -280,21 +299,30 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
         } catch SpotifyClient.SpotifyError.notPlaying {
             spotifyAnchor = nil
             return nil
+        } catch SpotifyClient.SpotifyError.unauthorized {
+            // Login is gone (the controller already dropped it) — stop replaying the last song.
+            spotifyAnchor = nil
+            return nil
         } catch SpotifyClient.SpotifyError.rateLimited(let retry) {
             // Back off: skip polling until Retry-After elapses.
             lastSpotifyPoll = now.addingTimeInterval(TimeInterval(retry))
             return spotifyAnchor
         } catch {
-            return spotifyAnchor
+            return spotifyAnchor // network blip: keep extrapolating the last anchor
         }
     }
 
     // MARK: Lyrics
 
     /// Load lyrics for a newly-detected song. Cached lyrics resolve synchronously (instant); a
-    /// network lookup is spawned as a detached task so it never blocks the 1s tick loop — the
+    /// network lookup runs in a separate task so it never blocks the 1s tick loop — the
     /// current song's activity keeps advancing while the next song's lyrics download.
     private func loadLyrics(for track: NowPlayingTrack) {
+        // New token FIRST, so a still-running fetch for the previous song can't land on this one
+        // (it used to overwrite a cached song's lyrics when you skipped quickly).
+        let token = UUID()
+        lyricsFetchToken = token
+        lyricsRetryAt = nil
         currentLineIndex = nil
         if let cached = store.load(for: track) {
             // Romanize on load too, so caches saved before this feature still show Hinglish.
@@ -302,8 +330,6 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
             status = cached.isSynced ? "Synced lyrics (cached)" : "Plain lyrics (cached)"
             return
         }
-        let token = UUID()
-        lyricsFetchToken = token
         status = "Fetching lyrics…"
         lyrics = nil
         Task { [weak self] in
@@ -318,7 +344,8 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
             } catch let LRCLibClient.LRCLibError.badResponse(code) {
                 guard lyricsFetchToken == token else { return }
                 lyrics = nil
-                status = "Lyrics HTTP error \(code)"
+                status = "Lyrics HTTP error \(code), retrying"
+                lyricsRetryAt = Date().addingTimeInterval(Self.lyricsRetryDelay)
             } catch is LRCLibClient.LRCLibError {
                 guard lyricsFetchToken == token else { return }
                 lyrics = nil
@@ -326,7 +353,8 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
             } catch {
                 guard lyricsFetchToken == token else { return }
                 lyrics = nil
-                status = "Lyrics fetch failed: \((error as NSError).localizedDescription)"
+                status = "Lyrics fetch failed: \((error as NSError).localizedDescription), retrying"
+                lyricsRetryAt = Date().addingTimeInterval(Self.lyricsRetryDelay)
             }
         }
     }
@@ -339,13 +367,7 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
             // just retitle it to this song — don't end it. Ending + re-requesting can't restart a
             // Live Activity from the background, which is what made song changes drop the widget.
             currentLineIndex = nil
-            let state = LyricsActivityAttributes.ContentState(
-                title: playback.track.title,
-                artist: playback.track.artist,
-                currentLine: "",
-                nextLine: nil,
-                isPlaying: playback.isPlaying
-            )
+            let state = activityState(playback, positionMs: positionMs, current: "", next: nil)
             await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
             await liveActivity.update(state)
             return
@@ -360,15 +382,40 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
             return nil
         }()
 
-        let state = LyricsActivityAttributes.ContentState(
+        let state = activityState(playback, positionMs: positionMs, current: current, next: next)
+        await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
+        await liveActivity.update(state)
+    }
+
+    /// The pushed state, including the song clock. `songStart` is held steady across ticks so
+    /// the widget's live timer never turns into a push per second (see `steadySongStart`).
+    private func activityState(_ playback: PlaybackState, positionMs: Int, current: String, next: String?)
+        -> LyricsActivityAttributes.ContentState {
+        let duration = playback.track.durationMs
+        var start: Date?
+        if playback.isPlaying, duration != nil {
+            start = Self.steadySongStart(previous: songStartAnchor,
+                                         candidate: Date().addingTimeInterval(-Double(positionMs) / 1000))
+            songStartAnchor = start
+        }
+        return LyricsActivityAttributes.ContentState(
             title: playback.track.title,
             artist: playback.track.artist,
             currentLine: current,
             nextLine: next,
-            isPlaying: playback.isPlaying
+            isPlaying: playback.isPlaying,
+            durationMs: duration,
+            songStart: start,
+            pausedPositionMs: !playback.isPlaying && duration != nil ? positionMs / 1000 * 1000 : nil
         )
-        await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
-        await liveActivity.update(state)
+    }
+
+    /// Keep the previous song-start anchor unless the new estimate moved by more than 1.5s (a
+    /// seek, a new song, a resume). Each tick's estimate jitters by a few ms; without this every
+    /// tick would differ from the last push and re-push the Live Activity.
+    nonisolated static func steadySongStart(previous: Date?, candidate: Date) -> Date {
+        if let previous, abs(previous.timeIntervalSince(candidate)) < 1.5 { return previous }
+        return candidate
     }
 
     private func clear() {
@@ -388,7 +435,17 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
         Task { await liveActivity.update(idle); refreshActivityDiagnostics() }
     }
 
+    /// Every 30s while the loop runs. A missing heartbeat in the log = the app wasn't ticking.
+    private func heartbeatIfDue(_ now: Date) {
+        guard now.timeIntervalSince(lastHeartbeat) >= Self.heartbeatInterval else { return }
+        lastHeartbeat = now
+        let line = currentLineIndex.map { "\($0 + 1)/\(lyrics?.lines.count ?? 0)" } ?? "-"
+        let loc = lastLocationUpdate.map { "\(Int(now.timeIntervalSince($0)))s" } ?? "never"
+        EventLog.log("hb \(wasInBackground ? "bg" : "fg") mode=\(sourceMode.rawValue) song=\"\(track?.title ?? "-")\" line=\(line) act=[\(liveActivity.healthSummary)] pushes=\(liveActivity.updateAttempts) loc=\(loc) carplay=\(isCarPlayConnected)")
+    }
+
     private func recordTickGap(_ gap: TimeInterval, at timestamp: Date) {
+        EventLog.log("tick gap \(String(format: "%.1f", gap))s (loop was suspended or blocked)")
         tickGapEvents.append(TickGapEvent(timestamp: timestamp, gap: gap))
         tickGapEvents = Array(tickGapEvents.suffix(Self.maxStoredTickGaps))
         if let data = try? JSONEncoder().encode(tickGapEvents) {
@@ -399,5 +456,6 @@ final class NowPlayingCoordinator: NSObject, ObservableObject {
     private func refreshActivityDiagnostics() {
         activityUpdateAttempts = liveActivity.updateAttempts
         lastActivityUpdateAttempt = liveActivity.lastUpdateAttempt
+        activityHealth = liveActivity.healthSummary
     }
 }
