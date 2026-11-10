@@ -23,7 +23,21 @@
           "NSLocationAlwaysAndWhenInUseUsageDescription": "Keeps Car Lyrics running in the background so lyrics keep advancing on CarPlay and the lock screen. Your location isn't recorded or shared."
         }
       },
-      "versions": []
+      "versions": [
+        {
+          "version": "1.0",
+          "buildVersion": "3",
+          "date": "2026-11-10T19:36:41Z",
+          "localizedDescription": "Build 3 (unsigned IPA for SideStore).",
+          "downloadURL": "https://github.com/aks-sax-yz/CarLyrics/releases/download/v1.0-3/CarLyrics.ipa",
+          "size": 344362,
+          "minOSVersion": "26.0"
+        }
+      ],
+      "downloadURL": "https://github.com/aks-sax-yz/CarLyrics/releases/download/v1.0-3/CarLyrics.ipa",
+      "version": "1.0",
+      "versionDate": "2026-11-10T19:36:41Z",
+      "size": 344362
     }
   ],
   "news": []
