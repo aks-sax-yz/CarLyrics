@@ -1,0 +1,87 @@
+name: CarLyrics
+options:
+  bundleIdPrefix: com.akshatsaxena01.carlyrics
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+
+packages:
+  CarLyricsCore:
+    path: CarLyricsCore
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: "3HT9UJ3NF5"
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  CarLyrics:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - Support
+    dependencies:
+      - package: CarLyricsCore
+      - target: LyricsWidgetExtension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.akshatsaxena01.carlyrics
+        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+    info:
+      path: Generated/CarLyrics-Info.plist
+      properties:
+        CFBundleDisplayName: Car Lyrics
+        NSAppleMusicUsageDescription: Car Lyrics reads what's playing in the Music app to show synced lyrics.
+        NSMicrophoneUsageDescription: Used only if you enable Shazam-style recognition for other apps.
+        # Location isn't used for maps — a continuous low-accuracy fix is the one background grant
+        # that survives CarPlay connect/disconnect, keeping the Live Activity loop advancing lines.
+        NSLocationWhenInUseUsageDescription: Keeps Car Lyrics running so lyrics keep advancing on CarPlay and the lock screen. Your location isn't recorded or shared.
+        NSLocationAlwaysAndWhenInUseUsageDescription: Keeps Car Lyrics running in the background so lyrics keep advancing on CarPlay and the lock screen. Your location isn't recorded or shared.
+        NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFrequentUpdates: true
+        # `location` is the background keep-alive (see BackgroundKeepAlive). `audio` stays for
+        # Listen mode's mic session.
+        UIBackgroundModes:
+          - location
+          - audio
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        CFBundleURLTypes:
+          - CFBundleURLName: com.akshatsaxena01.carlyrics.spotify
+            CFBundleURLSchemes:
+              - carlyrics
+
+  LyricsWidgetExtension:
+    type: app-extension
+    platform: iOS
+    sources:
+      - Widget
+      - Support
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.akshatsaxena01.carlyrics.widget
+    info:
+      path: Generated/LyricsWidget-Info.plist
+      properties:
+        CFBundleDisplayName: Lyrics
+        NSSupportsLiveActivities: true
+        NSSupportsLiveActivitiesFrequentUpdates: true
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+
+  CarLyricsTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - AppTests
+    dependencies:
+      - target: CarLyrics
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.akshatsaxena01.carlyrics.tests
+        GENERATE_INFOPLIST_FILE: true
