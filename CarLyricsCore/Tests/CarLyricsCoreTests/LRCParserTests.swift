@@ -112,6 +112,17 @@ final class LRCLibSearchRankingTests: XCTestCase {
         XCTAssertEqual(best?.syncedLyrics, "[00:01.00]album")
     }
 
+    func testPrefersHandTypedLatinVersionWithinTwoSeconds() {
+        let devanagari = r("[00:01.00]तेरा भाई", duration: 142), latin = r("[00:01.00]Tera bhai", duration: 143)
+        XCTAssertEqual(LRCLibClient.bestMatch([devanagari, latin], durationMs: 142_000, preferLatin: true)?.syncedLyrics,
+                       latin.syncedLyrics)
+        // Only when asked, and never at the cost of timings from a different cut.
+        XCTAssertEqual(LRCLibClient.bestMatch([devanagari, latin], durationMs: 142_000)?.syncedLyrics, devanagari.syncedLyrics)
+        let otherCut = r("[00:01.00]Tera bhai", duration: 315)
+        XCTAssertEqual(LRCLibClient.bestMatch([devanagari, otherCut], durationMs: 142_000, preferLatin: true)?.syncedLyrics,
+                       devanagari.syncedLyrics)
+    }
+
     func testSkipsResultsWithoutLyricsAndKeepsApiOrderOnTies() {
         XCTAssertNil(LRCLibClient.bestMatch([r(nil, duration: 200), r("", plain: "", duration: 200)], durationMs: nil))
         let best = LRCLibClient.bestMatch([r("[00:01.00]first", duration: 100), r("[00:01.00]second", duration: 300)], durationMs: nil)

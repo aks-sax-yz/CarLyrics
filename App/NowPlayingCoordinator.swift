@@ -62,6 +62,9 @@ final class NowPlayingCoordinator: ObservableObject {
     @Published var solidColor: LyricsActivityAttributes.RGB {
         didSet { UserDefaults.standard.set([solidColor.r, solidColor.g, solidColor.b], forKey: Self.solidColorKey) }
     }
+    @Published var lineTransition: LyricsActivityAttributes.Transition {
+        didSet { UserDefaults.standard.set(lineTransition.rawValue, forKey: Self.transitionKey) }
+    }
     /// Average colour of the current Apple Music artwork; nil for other sources or no art.
     private var albumColor: LyricsActivityAttributes.RGB?
     @Published private(set) var track: NowPlayingTrack?
@@ -136,6 +139,7 @@ final class NowPlayingCoordinator: ObservableObject {
     private static let offsetKey = "sync.userOffsetMs"
     private static let backgroundKey = "lyrics.background"
     private static let solidColorKey = "lyrics.solidColor"
+    private static let transitionKey = "lyrics.transition"
     private static let tickGapsKey = "diagnostics.tickGaps"
     private static let carPlayKey = "diagnostics.carPlayConnected"
     private static let spotifyPollInterval: TimeInterval = 3
@@ -150,6 +154,8 @@ final class NowPlayingCoordinator: ObservableObject {
             .flatMap(LyricsBackground.init(rawValue:)) ?? .solid
         let rgb = UserDefaults.standard.array(forKey: Self.solidColorKey) as? [Double] ?? []
         solidColor = rgb.count == 3 ? .init(r: rgb[0], g: rgb[1], b: rgb[2]) : .black
+        lineTransition = UserDefaults.standard.string(forKey: Self.transitionKey)
+            .flatMap(LyricsActivityAttributes.Transition.init(rawValue:)) ?? .instant
         engine.userOffsetMs = userOffsetMs
         if let data = UserDefaults.standard.data(forKey: Self.tickGapsKey),
            let stored = try? JSONDecoder().decode([TickGapEvent].self, from: data) {
@@ -353,7 +359,7 @@ final class NowPlayingCoordinator: ObservableObject {
         lyricsRetryAt = nil
         currentLineIndex = nil
         if let cached = store.load(for: track) {
-            // Romanize on load too, so caches saved before this feature still show Hinglish.
+            // The cache keeps the original script; romanize on load so converter fixes apply.
             lyrics = Transliterator.romanized(cached)
             status = cached.isSynced ? "Synced lyrics (cached)" : "Plain lyrics (cached)"
             return
@@ -367,7 +373,7 @@ final class NowPlayingCoordinator: ObservableObject {
                 guard lyricsFetchToken == token else { return } // superseded by a newer song
                 let display = Transliterator.romanized(fetched)
                 lyrics = display
-                store.save(display, for: track) // cache the romanized form
+                store.save(fetched, for: track) // original script, so romanizer fixes reach cached songs
                 status = display.isSynced ? "Synced lyrics" : "Plain lyrics (no timing)"
             } catch let LRCLibClient.LRCLibError.badResponse(code) {
                 guard lyricsFetchToken == token else { return }
@@ -480,7 +486,8 @@ final class NowPlayingCoordinator: ObservableObject {
             durationMs: duration,
             songStart: start,
             pausedPositionMs: !playback.isPlaying && duration != nil ? positionMs / 1000 * 1000 : nil,
-            background: activityBackground
+            background: activityBackground,
+            transition: lineTransition
         )
     }
 
@@ -515,7 +522,8 @@ final class NowPlayingCoordinator: ObservableObject {
             currentLine: "",
             nextLine: nil,
             isPlaying: false,
-            background: activityBackground
+            background: activityBackground,
+            transition: lineTransition
         )
         Task { await liveActivity.update(idle); refreshActivityDiagnostics() }
     }

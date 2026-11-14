@@ -63,7 +63,7 @@ public struct LRCLibClient: Sendable {
     }
 
     /// Fuzzy search fallback when exact `get` misses. Picks the best result (see `bestMatch`).
-    public func search(track: String, artist: String, durationMs: Int? = nil) async throws -> TimedLyrics {
+    public func search(track: String, artist: String, durationMs: Int? = nil, preferLatin: Bool = false) async throws -> TimedLyrics {
         var comps = URLComponents(url: baseURL.appendingPathComponent("api/search"), resolvingAgainstBaseURL: false)!
         comps.queryItems = [
             URLQueryItem(name: "track_name", value: track),
@@ -75,17 +75,21 @@ public struct LRCLibClient: Sendable {
         guard let http = resp as? HTTPURLResponse else { throw LRCLibError.badResponse(status: -1) }
         guard http.statusCode == 200 else { throw LRCLibError.badResponse(status: http.statusCode) }
         let results = try JSONDecoder().decode([Response].self, from: data)
-        guard let best = Self.bestMatch(results, durationMs: durationMs) else { throw LRCLibError.notFound }
+        guard let best = Self.bestMatch(results, durationMs: durationMs, preferLatin: preferLatin) else { throw LRCLibError.notFound }
         return try toLyrics(best)
     }
 
     /// Synced beats plain (plain can't drive the Live Activity), then closest duration (a live or
-    /// remix cut has different timings). Ties keep LRCLIB's order.
-    static func bestMatch(_ results: [Response], durationMs: Int?) -> Response? {
-        func rank(_ r: Response) -> (Int, Double) {
+    /// remix cut has different timings). With `preferLatin`, a version already typed in Latin
+    /// script within 2s of the track's length wins over a closer one we'd have to romanize. Ties
+    /// keep LRCLIB's order.
+    static func bestMatch(_ results: [Response], durationMs: Int?, preferLatin: Bool = false) -> Response? {
+        func rank(_ r: Response) -> (Int, Int, Double) {
             let synced = r.syncedLyrics?.isEmpty == false ? 0 : 1
-            guard let durationMs, let d = r.duration else { return (synced, 0) }
-            return (synced, abs(d - Double(durationMs) / 1000))
+            let diff = durationMs.flatMap { ms in r.duration.map { abs($0 - Double(ms) / 1000) } } ?? 0
+            let latin = preferLatin && diff <= 2
+                && !Transliterator.needsRomanization(r.syncedLyrics ?? r.plainLyrics ?? "") ? 0 : 1
+            return (synced, latin, diff)
         }
         return results
             .filter { $0.syncedLyrics?.isEmpty == false || $0.plainLyrics?.isEmpty == false }
@@ -94,14 +98,25 @@ public struct LRCLibClient: Sendable {
 
     /// Try exact get, then fall back to search. The path the app actually calls.
     public func lyrics(for track: NowPlayingTrack) async throws -> TimedLyrics {
+        let exact: TimedLyrics
         do {
             // Album deliberately omitted: Apple Music appends "- Single"/"(Deluxe)" etc., so an
             // exact album match nearly always 404s and forces the slow search fallback. Track +
             // artist + duration is LRCLIB's effective signature and hits on the first request.
-            return try await get(track: track.title, artist: track.artist, durationMs: track.durationMs)
+            exact = try await get(track: track.title, artist: track.artist, durationMs: track.durationMs)
         } catch {
-            return try await search(track: track.title, artist: track.artist, durationMs: track.durationMs)
+            return try await search(track: track.title, artist: track.artist, durationMs: track.durationMs, preferLatin: true)
         }
+        // LRCLIB's exact pick is often in Devanagari (or another script) while someone has also
+        // uploaded the song hand-typed in Latin script. A person's Hinglish beats ours, so look
+        // for it, at the cost of one more request for non-Latin songs only.
+        guard exact.lines.contains(where: { Transliterator.needsRomanization($0.text) }),
+              let latin = try? await search(track: track.title, artist: track.artist,
+                                            durationMs: track.durationMs, preferLatin: true),
+              latin.isSynced || !exact.isSynced,
+              !latin.lines.contains(where: { Transliterator.needsRomanization($0.text) })
+        else { return exact }
+        return latin
     }
 
     // MARK: - Internals

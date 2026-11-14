@@ -32,6 +32,22 @@ struct LyricsActivityAttributes: ActivityAttributes {
         /// Lyrics background: the user's solid pick or the album art's average colour, or nil for
         /// the system's glass. The widget picks black or white text to suit it.
         var background: RGB? = .black
+        /// How lines switch; nil (older builds) = instant.
+        var transition: Transition? = nil
+    }
+
+    /// Line-switch styles. Only system timer views animate in a Live Activity, so each one is a
+    /// left → right sweep; fades and slides aren't possible.
+    enum Transition: String, Codable, CaseIterable, Identifiable {
+        case instant, wipe, karaoke
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .instant: "Instant"
+            case .wipe: "Wipe"
+            case .karaoke: "Karaoke"
+            }
+        }
     }
 
     struct TimedLine: Codable, Hashable {

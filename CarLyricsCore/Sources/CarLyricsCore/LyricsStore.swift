@@ -34,11 +34,15 @@ public struct LyricsStore: Sendable {
         try? data.write(to: fileURL(for: key), options: .atomic)
     }
 
+    /// Bump when what's cached changes, so stale entries are skipped. v2: the original script
+    /// (romanized on load), not v1's baked-in ICU romanization.
+    static let version = "v2"
+
     public func load(for track: NowPlayingTrack) -> TimedLyrics? {
-        load(key: track.identityKey)
+        load(key: "\(Self.version)|\(track.identityKey)")
     }
 
     public func save(_ lyrics: TimedLyrics, for track: NowPlayingTrack) {
-        save(lyrics, key: track.identityKey)
+        save(lyrics, key: "\(Self.version)|\(track.identityKey)")
     }
 }

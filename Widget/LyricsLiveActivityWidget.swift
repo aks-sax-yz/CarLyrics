@@ -18,7 +18,8 @@ struct LyricsLiveActivityWidget: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.center) {
                     VStack(spacing: 4) {
-                        ClockedText(lines: context.state.lines ?? [], fallback: context.state.currentLine)
+                        ClockedText(lines: context.state.lines ?? [], fallback: context.state.currentLine,
+                                    style: context.state.transition ?? .instant)
                             .font(.headline)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
@@ -70,7 +71,7 @@ struct LyricsSmallView: View {
                 .foregroundStyle(.secondary)
             // Long lines wrap to 2 lines and shrink to fit rather than end in "…"; the lyric
             // wins the height over the title row.
-            ClockedText(lines: state.lines ?? [], fallback: state.currentLine)
+            ClockedText(lines: state.lines ?? [], fallback: state.currentLine, style: state.transition ?? .instant)
                 .font(.title3.weight(.bold))
                 .lineLimit(2)
                 .minimumScaleFactor(0.5)
@@ -99,7 +100,7 @@ struct LyricsLockScreenView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            ClockedText(lines: state.lines ?? [], fallback: state.currentLine)
+            ClockedText(lines: state.lines ?? [], fallback: state.currentLine, style: state.transition ?? .instant)
                 .font(.title3.weight(.bold))
                 .lineLimit(2)
                 .minimumScaleFactor(0.5)
@@ -170,30 +171,49 @@ struct SongProgress: View {
 /// timer ProgressViews. iOS animates those on its own clock like the song timer, so lines switch on
 /// time with no push per line. ponytail: masking with timer views isn't a documented use; if a future
 /// iOS stops animating them, lines freeze until the next window push (every 8 lines).
+///
+/// `style` is built from the same sweep, since nothing else animates in a Live Activity (no fades or
+/// slides): `wipe` reveals the new line left → right over the old one; `karaoke` draws the line dim
+/// and lights it left → right over its own duration.
 struct ClockedText: View {
     let lines: [LyricsActivityAttributes.TimedLine]
     let fallback: String
     var placeholder = "♪ ♪ ♪" // for instrumental gaps
+    var style: LyricsActivityAttributes.Transition = .instant
 
     var body: some View {
         if lines.isEmpty {
             Text(fallback.isEmpty ? placeholder : fallback)
         } else {
+            let sweep = style == .wipe ? 0.4 : 0.1
             ZStack(alignment: .leading) {
                 ForEach(lines.indices, id: \.self) { i in
-                    Text(lines[i].text.isEmpty ? placeholder : lines[i].text)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .mask { Step(at: lines[i].at, visibleAfter: true) }
+                    line(i)
+                        .mask { Step(at: lines[i].at, duration: sweep) }
                         .mask {
-                            if i + 1 < lines.count { Step(at: lines[i + 1].at, visibleAfter: false) } else { Color.black }
+                            // Hidden wherever the next line has already swept in.
+                            if i + 1 < lines.count { Step(at: lines[i + 1].at, duration: sweep, inverted: true) } else { Color.black }
                         }
                 }
             }
         }
     }
+
+    @ViewBuilder private func line(_ i: Int) -> some View {
+        let text = Text(lines[i].text.isEmpty ? placeholder : lines[i].text)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        if style == .karaoke {
+            let sung = i + 1 < lines.count ? lines[i + 1].at.timeIntervalSince(lines[i].at) : 3
+            text.opacity(0.4)
+                .overlay { text.mask { Step(at: lines[i].at, duration: max(sung, 0.1)) } }
+        } else {
+            text
+        }
+    }
 }
 
-/// The dimmed read-ahead line: during line i it shows line i+1 (nothing after the last).
+/// The dimmed read-ahead line: during line i it shows line i+1 (nothing after the last). Same
+/// transition as the current line, except karaoke, which only makes sense on the line being sung.
 struct NextLine: View {
     let state: LyricsActivityAttributes.ContentState
 
@@ -203,23 +223,24 @@ struct NextLine: View {
             if let next = state.nextLine, !next.isEmpty { Text(next) }
         } else {
             ClockedText(lines: lines.indices.map { .init(text: $0 + 1 < lines.count ? lines[$0 + 1].text : "", at: lines[$0].at) },
-                        fallback: "", placeholder: "")
+                        fallback: "", placeholder: "", style: state.transition == .wipe ? .wipe : .instant)
         }
     }
 }
 
-/// A mask that turns fully opaque at `at` (or fully clear, with `visibleAfter: false`): a timer
-/// ProgressView that fills in 0.1s, stretched over the whole text. Its grey track would leak every
-/// other line as a faint ghost, so it's flattened onto black and contrast-boosted: the white fill
-/// stays white (opaque), the track drops to black (clear).
+/// A mask revealed left → right from `at` over `duration` (`inverted`: hidden left → right instead):
+/// a timer ProgressView stretched over the whole text. Its grey track would leak every other line as
+/// a faint ghost, so it's flattened onto black and contrast-boosted: the white fill stays white
+/// (opaque), the track drops to black (clear).
 struct Step: View {
     let at: Date
-    let visibleAfter: Bool
+    var duration: TimeInterval = 0.1
+    var inverted = false
 
     var body: some View {
-        ZStack {
+        let fill = ZStack {
             Color.black
-            ProgressView(timerInterval: at...at.addingTimeInterval(0.1), countsDown: !visibleAfter) {
+            ProgressView(timerInterval: at...at.addingTimeInterval(duration), countsDown: false) {
                 EmptyView()
             } currentValueLabel: { EmptyView() }
                 .progressViewStyle(.linear)
@@ -228,6 +249,9 @@ struct Step: View {
         }
         .compositingGroup()
         .contrast(3)
+        Group {
+            if inverted { fill.colorInvert() } else { fill }
+        }
         .luminanceToAlpha()
     }
 }

@@ -90,6 +90,14 @@ struct ContentView: View {
             }
 
             backgroundRow
+            HStack {
+                Text("Lines")
+                    .font(.caption)
+                Picker("Line transition", selection: $coordinator.lineTransition) {
+                    ForEach(LyricsActivityAttributes.Transition.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            }
             spotifyRow
             diagnosticsRow
         }
