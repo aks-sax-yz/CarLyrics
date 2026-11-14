@@ -89,10 +89,41 @@ struct ContentView: View {
                     .frame(width: 64, alignment: .trailing)
             }
 
+            backgroundRow
             spotifyRow
             diagnosticsRow
         }
         .padding()
+    }
+
+    /// Widget background: a solid colour (text turns black or white to suit), the album art's
+    /// colour, or the system's glass.
+    private var backgroundRow: some View {
+        HStack {
+            Text("Widget")
+                .font(.caption)
+            Picker("Widget background", selection: $coordinator.lyricsBackground) {
+                ForEach(NowPlayingCoordinator.LyricsBackground.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            if coordinator.lyricsBackground != .glass {
+                // Album art falls back to this colour when the song has no artwork.
+                ColorPicker("Colour", selection: solidColor, supportsOpacity: false)
+                    .labelsHidden()
+            }
+        }
+    }
+
+    private var solidColor: Binding<Color> {
+        Binding(
+            get: { Color(red: coordinator.solidColor.r, green: coordinator.solidColor.g, blue: coordinator.solidColor.b) },
+            set: {
+                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
+                UIColor($0).getRed(&r, green: &g, blue: &b, alpha: nil)
+                // Wide-gamut picks come back outside 0...1 in extended sRGB.
+                coordinator.solidColor = .init(r: min(max(r, 0), 1), g: min(max(g, 0), 1), b: min(max(b, 0), 1))
+            }
+        )
     }
 
     /// Background-freeze diagnostic. Background the app ~30s then reopen: if "max gap" jumps to

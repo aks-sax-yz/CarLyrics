@@ -43,6 +43,27 @@ final class NowPlayingCoordinator: ObservableObject {
             }
         }
     }
+    /// What the widget draws behind the lyrics.
+    enum LyricsBackground: String, CaseIterable, Identifiable {
+        case solid, albumArt, glass
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .solid: "Solid"
+            case .albumArt: "Album"
+            case .glass: "Glass"
+            }
+        }
+    }
+
+    @Published var lyricsBackground: LyricsBackground {
+        didSet { UserDefaults.standard.set(lyricsBackground.rawValue, forKey: Self.backgroundKey) }
+    }
+    @Published var solidColor: LyricsActivityAttributes.RGB {
+        didSet { UserDefaults.standard.set([solidColor.r, solidColor.g, solidColor.b], forKey: Self.solidColorKey) }
+    }
+    /// Average colour of the current Apple Music artwork; nil for other sources or no art.
+    private var albumColor: LyricsActivityAttributes.RGB?
     @Published private(set) var track: NowPlayingTrack?
     @Published private(set) var lyrics: TimedLyrics?
     @Published private(set) var currentLineIndex: Int?
@@ -113,6 +134,8 @@ final class NowPlayingCoordinator: ObservableObject {
     private var songStartAnchor: Date?
 
     private static let offsetKey = "sync.userOffsetMs"
+    private static let backgroundKey = "lyrics.background"
+    private static let solidColorKey = "lyrics.solidColor"
     private static let tickGapsKey = "diagnostics.tickGaps"
     private static let carPlayKey = "diagnostics.carPlayConnected"
     private static let spotifyPollInterval: TimeInterval = 3
@@ -123,6 +146,10 @@ final class NowPlayingCoordinator: ObservableObject {
 
     init() {
         userOffsetMs = UserDefaults.standard.integer(forKey: Self.offsetKey)
+        lyricsBackground = UserDefaults.standard.string(forKey: Self.backgroundKey)
+            .flatMap(LyricsBackground.init(rawValue:)) ?? .solid
+        let rgb = UserDefaults.standard.array(forKey: Self.solidColorKey) as? [Double] ?? []
+        solidColor = rgb.count == 3 ? .init(r: rgb[0], g: rgb[1], b: rgb[2]) : .black
         engine.userOffsetMs = userOffsetMs
         if let data = UserDefaults.standard.data(forKey: Self.tickGapsKey),
            let stored = try? JSONDecoder().decode([TickGapEvent].self, from: data) {
@@ -225,6 +252,7 @@ final class NowPlayingCoordinator: ObservableObject {
 
         if playback.track.isDifferentSong(from: track) {
             track = playback.track
+            albumColor = playback.track.source == .appleMusic ? appleMusic.artworkColor() : nil
             EventLog.log("song \"\(playback.track.title)\" — \(playback.track.artist) [\(playback.track.source.rawValue)]")
             loadLyrics(for: playback.track) // non-blocking: fetch runs async, loop keeps ticking
         } else if let retryAt = lyricsRetryAt, now >= retryAt {
@@ -382,10 +410,55 @@ final class NowPlayingCoordinator: ObservableObject {
             return nil
         }()
 
-        let state = activityState(playback, positionMs: positionMs, current: current, next: next)
+        var state = activityState(playback, positionMs: positionMs, current: current, next: next)
+        if let start = state.songStart {
+            // Playing: hand iOS the upcoming lines with start times and let its clock switch them.
+            // The state then changes once per window, not once per line (2026-11-14 drive: per-line
+            // pushes reached the CarPlay widget only every 10–30s).
+            state.currentLine = ""
+            state.nextLine = nil
+            state.lines = Self.lyricWindow(lyrics, index: idx, songStart: start, userOffsetMs: engine.userOffsetMs)
+            // ActivityKit drops content over 4KB; long romanized lines can get there.
+            while (state.lines?.count ?? 0) > 1, ((try? JSONEncoder().encode(state))?.count ?? 0) > 3_500 {
+                state.lines?.removeLast()
+            }
+        }
         await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
         await liveActivity.update(state)
     }
+
+    /// The lines the widget switches on its own: from the start of the current block of 8, 24 long,
+    /// so the window moves every 8 lines and a push that lands up to ~16 lines late is still right.
+    /// Line i shows at songStart + its time, shifted earlier by the LRC + user offsets (see SyncEngine).
+    /// A leading "" (♪) covers the intro before the first line. A line longer than `splitOver`
+    /// characters (it ended in "…" on CarPlay) is shown as two parts, cut at the space nearest its
+    /// middle; the second part appears partway to the next line, in proportion to where the cut falls.
+    nonisolated static func lyricWindow(_ lyrics: TimedLyrics, index: Int?, songStart: Date, userOffsetMs: Int)
+        -> [LyricsActivityAttributes.TimedLine] {
+        let lines = lyrics.lines
+        let from = (index ?? 0) / 8 * 8
+        let shiftMs = Double(userOffsetMs + lyrics.offsetMs)
+        let at = { (ms: Int) in songStart.addingTimeInterval((Double(ms) - shiftMs) / 1000) }
+        var window: [LyricsActivityAttributes.TimedLine] = from == 0 ? [.init(text: "", at: songStart)] : []
+        for i in from..<min(from + 24, lines.count) {
+            let text = lines[i].text
+            let half = text.count / 2
+            let spaces = text.enumerated().filter { $0.element == " " }.map(\.offset)
+            if text.count > splitOver, i + 1 < lines.count,
+               let cut = spaces.min(by: { abs($0 - half) < abs($1 - half) }) {
+                let secondMs = lines[i].timeMs + (lines[i + 1].timeMs - lines[i].timeMs) * cut / text.count
+                window.append(.init(text: String(text.prefix(cut)), at: at(lines[i].timeMs)))
+                window.append(.init(text: String(text.dropFirst(cut + 1)), at: at(secondMs)))
+            } else {
+                window.append(.init(text: text, at: at(lines[i].timeMs)))
+            }
+        }
+        return window
+    }
+
+    /// Characters that fit on one CarPlay lyric line. ponytail: a character count, not a measured
+    /// width. Lower it if CarPlay still shows "…".
+    nonisolated static let splitOver = 32
 
     /// The pushed state, including the song clock. `songStart` is held steady across ticks so
     /// the widget's live timer never turns into a push per second (see `steadySongStart`).
@@ -406,8 +479,19 @@ final class NowPlayingCoordinator: ObservableObject {
             isPlaying: playback.isPlaying,
             durationMs: duration,
             songStart: start,
-            pausedPositionMs: !playback.isPlaying && duration != nil ? positionMs / 1000 * 1000 : nil
+            pausedPositionMs: !playback.isPlaying && duration != nil ? positionMs / 1000 * 1000 : nil,
+            background: activityBackground
         )
+    }
+
+    /// The widget background for the current setting. Album art falls back to the solid colour for
+    /// sources without artwork here (Spotify, Listen).
+    private var activityBackground: LyricsActivityAttributes.RGB? {
+        switch lyricsBackground {
+        case .solid: solidColor
+        case .albumArt: albumColor ?? solidColor
+        case .glass: nil
+        }
     }
 
     /// Keep the previous song-start anchor unless the new estimate moved by more than 1.5s (a
@@ -430,7 +514,8 @@ final class NowPlayingCoordinator: ObservableObject {
             artist: "Car Lyrics",
             currentLine: "",
             nextLine: nil,
-            isPlaying: false
+            isPlaying: false,
+            background: activityBackground
         )
         Task { await liveActivity.update(idle); refreshActivityDiagnostics() }
     }
