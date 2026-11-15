@@ -417,7 +417,7 @@ final class NowPlayingCoordinator: ObservableObject {
         }()
 
         var state = activityState(playback, positionMs: positionMs, current: current, next: next)
-        if let start = state.songStart {
+        if let start = state.songStart, lineTransition != .morph { // morph needs a push per line
             // Playing: hand iOS the upcoming lines with start times and let its clock switch them.
             // The state then changes once per window, not once per line (2026-11-14 drive: per-line
             // pushes reached the CarPlay widget only every 10–30s).

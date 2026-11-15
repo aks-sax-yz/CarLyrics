@@ -183,7 +183,9 @@ struct ClockedText: View {
 
     var body: some View {
         if lines.isEmpty {
+            // Pushed per line (Morph, paused, Listen): iOS morphs the old text into the new.
             Text(fallback.isEmpty ? placeholder : fallback)
+                .contentTransition(.interpolate)
         } else {
             let sweep = style == .wipe ? 0.4 : 0.1
             ZStack(alignment: .leading) {
@@ -201,13 +203,17 @@ struct ClockedText: View {
 
     @ViewBuilder private func line(_ i: Int) -> some View {
         let text = Text(lines[i].text.isEmpty ? placeholder : lines[i].text)
-            .frame(maxWidth: .infinity, alignment: .leading)
         if style == .karaoke {
-            let sung = i + 1 < lines.count ? lines[i + 1].at.timeIntervalSince(lines[i].at) : 3
-            text.opacity(0.4)
-                .overlay { text.mask { Step(at: lines[i].at, duration: max(sung, 0.1)) } }
+            // One row, shrunk to fit: a left → right sweep can't follow text onto a second row (it
+            // lit both rows at once), and a per-row sweep would need the wrap point, which the
+            // widget can't know. Long lines are split at 32 chars anyway, so the shrink is mild.
+            let sung = max(i + 1 < lines.count ? lines[i + 1].at.timeIntervalSince(lines[i].at) : 3, 0.2)
+            let row = text.lineLimit(1)
+            row.opacity(0.4)
+                .overlay { row.mask { Step(at: lines[i].at, duration: sung) } }
+                .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            text
+            text.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -220,7 +226,7 @@ struct NextLine: View {
     var body: some View {
         let lines = state.lines ?? []
         if lines.isEmpty {
-            if let next = state.nextLine, !next.isEmpty { Text(next) }
+            if let next = state.nextLine, !next.isEmpty { Text(next).contentTransition(.interpolate) }
         } else {
             ClockedText(lines: lines.indices.map { .init(text: $0 + 1 < lines.count ? lines[$0 + 1].text : "", at: lines[$0].at) },
                         fallback: "", placeholder: "", style: state.transition == .wipe ? .wipe : .instant)

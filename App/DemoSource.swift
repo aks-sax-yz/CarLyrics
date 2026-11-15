@@ -13,6 +13,8 @@ import CarLyricsCore
 @MainActor
 final class DemoSource {
     private let songs = [
+        // Long lines that wrap to two rows (karaoke's per-row sweep).
+        NowPlayingTrack(title: "I Write Sins Not Tragedies", artist: "Panic! At The Disco", durationMs: 187_000, source: .appleMusic),
         NowPlayingTrack(title: "Bohemian Rhapsody", artist: "Queen", durationMs: 354_000, source: .appleMusic),
         NowPlayingTrack(title: "Billie Jean", artist: "Michael Jackson", durationMs: 294_000, source: .appleMusic),
         NowPlayingTrack(title: "Hotel California", artist: "Eagles", durationMs: 391_000, source: .appleMusic),
