@@ -8,6 +8,9 @@ import CarLyricsCore
 /// that renders on CarPlay.
 @MainActor
 final class NowPlayingCoordinator: ObservableObject {
+    /// One instance for the app UI and `StartLyricsIntent`: a Shortcuts run can launch the app in
+    /// the background, where no scene (and no `onAppear`) exists to create or start one.
+    static let shared = NowPlayingCoordinator()
     enum SourceMode: String, CaseIterable, Identifiable {
         case auto, appleMusic, spotify, shazam
         #if targetEnvironment(simulator)
@@ -190,6 +193,16 @@ final class NowPlayingCoordinator: ObservableObject {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
+    }
+
+    /// `StartLyricsIntent` entry point. Starts the loop if a background launch skipped `onAppear`,
+    /// then requests the activity right away: the intent's run is what lets iOS grant it from the
+    /// background, so it can't wait for the next tick (and nothing may be playing yet).
+    func startFromIntent() async {
+        EventLog.log("intent: start lyrics (activity \(liveActivity.healthSummary))")
+        start()
+        await liveActivity.ensureActivity(songId: track?.identityKey ?? "idle", initial: idleState)
+        refreshActivityDiagnostics()
     }
 
     /// Becoming active swaps in a fresh Live Activity if the current one is a leftover or has
@@ -516,7 +529,12 @@ final class NowPlayingCoordinator: ObservableObject {
         lyrics = nil
         currentLineIndex = nil
         status = "Nothing playing"
-        let idle = LyricsActivityAttributes.ContentState(
+        let idle = idleState
+        Task { await liveActivity.update(idle); refreshActivityDiagnostics() }
+    }
+
+    private var idleState: LyricsActivityAttributes.ContentState {
+        LyricsActivityAttributes.ContentState(
             title: "Nothing playing",
             artist: "Car Lyrics",
             currentLine: "",
@@ -525,7 +543,6 @@ final class NowPlayingCoordinator: ObservableObject {
             background: activityBackground,
             transition: lineTransition
         )
-        Task { await liveActivity.update(idle); refreshActivityDiagnostics() }
     }
 
     /// Every 30s while the loop runs. A missing heartbeat in the log = the app wasn't ticking.

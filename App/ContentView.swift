@@ -147,7 +147,7 @@ struct ContentView: View {
                     .buttonStyle(.bordered)
             }
             Text("location callback: \(locationUpdateAge) · activity attempts: \(coordinator.activityUpdateAttempts)")
-            Text("CarPlay: \(coordinator.isCarPlayConnected ? "connected" : "disconnected") · launch requires Shortcuts automation")
+            Text("CarPlay: \(coordinator.isCarPlayConnected ? "connected" : "disconnected") · auto-start: Shortcuts → CarPlay connects → Start Car Lyrics")
             Text("last activity attempt: \(activityAttemptAge) · gaps >3s: \(coordinator.tickGapEvents.count)")
             // Read this when the widget looks frozen: see LiveActivityController.healthSummary.
             Text("live activity: \(coordinator.activityHealth)")
