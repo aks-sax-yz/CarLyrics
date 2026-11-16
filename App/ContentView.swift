@@ -1,217 +1,186 @@
 import SwiftUI
-import AuthenticationServices
 import CarLyricsCore
 
+/// The lyrics screen, styled after Apple Music's: blurred artwork behind big bold lines, the
+/// current line bright, the rest dimmed and softened, auto-scrolling, tap a line to jump there.
+/// Everything else lives in Settings.
 struct ContentView: View {
     @EnvironmentObject var coordinator: NowPlayingCoordinator
-    @State private var spotifyError: String?
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                header
-                Divider()
-                lyricsScroller
-                Divider()
-                controls
+            ZStack {
+                ArtworkBackground(artwork: coordinator.artwork)
+                VStack(spacing: 0) {
+                    if coordinator.track != nil { NowPlayingHeader() }
+                    lyricsOrPlaceholder
+                }
             }
-            .navigationTitle("Car Lyrics")
-            .navigationBarTitleDisplayMode(.inline)
+            .environment(\.colorScheme, .dark)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Settings")
+                }
+            }
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .bottom) {
+                if coordinator.lyrics?.isSynced == true { SyncPill().padding(.bottom, 8) }
+            }
+            .sheet(isPresented: $showSettings) { SettingsView() }
         }
     }
 
-    private var header: some View {
-        VStack(spacing: 4) {
-            Text(coordinator.track?.title ?? "—")
-                .font(.headline)
-                .lineLimit(1)
-            Text(coordinator.track?.artist ?? "")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Text(coordinator.status)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+    @ViewBuilder private var lyricsOrPlaceholder: some View {
+        if coordinator.track == nil {
+            ContentUnavailableView {
+                Label(coordinator.status == "Stopped" ? "Stopped" : "Nothing Playing", systemImage: "music.note")
+            } description: {
+                Text("Play a song in Apple Music. Its lyrics appear here, on the Lock Screen and on CarPlay.")
+            }
+        } else if let lyrics = coordinator.lyrics, !lyrics.isEmpty {
+            LyricsList(lyrics: lyrics)
+        } else if coordinator.status.hasPrefix("Fetching") || coordinator.status.hasPrefix("Listening") {
+            ContentUnavailableView {
+                Label(coordinator.status.replacingOccurrences(of: "…", with: ""), systemImage: "text.quote")
+            } description: { ProgressView() }
+        } else {
+            ContentUnavailableView("No Lyrics", systemImage: "text.quote",
+                                   description: Text(coordinator.status))
         }
-        .padding(.vertical, 10)
     }
+}
 
-    private var lyricsScroller: some View {
+/// Artwork, title and artist, Apple Music's mini-player style.
+private struct NowPlayingHeader: View {
+    @EnvironmentObject var coordinator: NowPlayingCoordinator
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let artwork = coordinator.artwork {
+                    Image(uiImage: artwork).resizable().scaledToFill()
+                } else {
+                    Image(systemName: "music.note").font(.title3).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity).background(.quaternary)
+                }
+            }
+            .frame(width: 52, height: 52)
+            .clipShape(.rect(cornerRadius: 8))
+            .shadow(radius: 6, y: 3)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(coordinator.track?.title ?? "").font(.headline).lineLimit(1)
+                Text(coordinator.track?.artist ?? "").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 8)
+    }
+}
+
+/// Big, bold lines; the current one bright, others dimmed and blurred by distance; centred on
+/// the current line as it moves. Tapping a line seeks Apple Music to it.
+private struct LyricsList: View {
+    @EnvironmentObject var coordinator: NowPlayingCoordinator
+    let lyrics: TimedLyrics
+
+    var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    if let lyrics = coordinator.lyrics, !lyrics.isEmpty {
-                        ForEach(Array(lyrics.lines.enumerated()), id: \.offset) { index, line in
-                            Text(line.text.isEmpty ? "♪" : line.text)
-                                .font(index == coordinator.currentLineIndex ? .title2.bold() : .body)
-                                .foregroundStyle(index == coordinator.currentLineIndex ? .primary : .secondary)
-                                .id(index)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    } else {
-                        Text("No lyrics")
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 40)
+                VStack(alignment: .leading, spacing: 26) {
+                    ForEach(Array(lyrics.lines.enumerated()), id: \.offset) { index, line in
+                        lineView(index: index, text: line.text)
+                            .id(index)
                     }
                 }
-                .padding()
+                .padding(.horizontal, 24)
+                .padding(.vertical, 120) // lets the first and last lines reach the centre
             }
-            .onChange(of: coordinator.currentLineIndex) { _, newIndex in
-                guard let newIndex else { return }
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    proxy.scrollTo(newIndex, anchor: .center)
-                }
-            }
-        }
-    }
-
-    private var controls: some View {
-        VStack(spacing: 12) {
-            Picker("Source", selection: $coordinator.sourceMode) {
-                ForEach(NowPlayingCoordinator.SourceMode.allCases) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            HStack {
-                Text("Sync")
-                    .font(.caption)
-                Slider(
-                    value: Binding(
-                        get: { Double(coordinator.userOffsetMs) },
-                        set: { coordinator.userOffsetMs = Int($0) }
-                    ),
-                    in: -3000...3000, step: 100
-                )
-                Text("\(coordinator.userOffsetMs > 0 ? "+" : "")\(coordinator.userOffsetMs)ms")
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 64, alignment: .trailing)
-            }
-
-            backgroundRow
-            HStack {
-                Text("Lines")
-                    .font(.caption)
-                Picker("Line transition", selection: $coordinator.lineTransition) {
-                    ForEach(LyricsActivityAttributes.Transition.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-            }
-            spotifyRow
-            diagnosticsRow
-        }
-        .padding()
-    }
-
-    /// Widget background: a solid colour (text turns black or white to suit), the album art's
-    /// colour, or the system's glass.
-    private var backgroundRow: some View {
-        HStack {
-            Text("Widget")
-                .font(.caption)
-            Picker("Widget background", selection: $coordinator.lyricsBackground) {
-                ForEach(NowPlayingCoordinator.LyricsBackground.allCases) { Text($0.label).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            if coordinator.lyricsBackground != .glass {
-                // Album art falls back to this colour when the song has no artwork.
-                ColorPicker("Colour", selection: solidColor, supportsOpacity: false)
-                    .labelsHidden()
+            .scrollIndicators(.hidden)
+            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.08),
+                                         .init(color: .black, location: 0.9), .init(color: .clear, location: 1)],
+                                 startPoint: .top, endPoint: .bottom))
+            .onChange(of: coordinator.currentLineIndex, initial: true) { _, index in
+                guard let index else { return }
+                withAnimation(.smooth(duration: 0.5)) { proxy.scrollTo(index, anchor: .center) }
             }
         }
     }
 
-    private var solidColor: Binding<Color> {
-        Binding(
-            get: { Color(red: coordinator.solidColor.r, green: coordinator.solidColor.g, blue: coordinator.solidColor.b) },
-            set: {
-                var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0
-                UIColor($0).getRed(&r, green: &g, blue: &b, alpha: nil)
-                // Wide-gamut picks come back outside 0...1 in extended sRGB.
-                coordinator.solidColor = .init(r: min(max(r, 0), 1), g: min(max(g, 0), 1), b: min(max(b, 0), 1))
-            }
-        )
+    private func lineView(index: Int, text: String) -> some View {
+        let current = coordinator.currentLineIndex
+        let distance = current.map { abs($0 - index) } ?? 2
+        let isCurrent = distance == 0 && current != nil
+        return Text(text.isEmpty ? "♪" : text)
+            .font(.system(size: 30, weight: .bold))
+            .foregroundStyle(.white.opacity(isCurrent ? 1 : 0.32))
+            .blur(radius: isCurrent || !lyrics.isSynced ? 0 : min(Double(distance), 4) * 0.5)
+            .scaleEffect(isCurrent ? 1 : 0.97, anchor: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.rect)
+            .onTapGesture { coordinator.seek(toLine: index) }
+            .animation(.smooth(duration: 0.4), value: current)
+            .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
+}
 
-    /// Background-freeze diagnostic. Background the app ~30s then reopen: if "max gap" jumps to
-    /// ~30s the app was suspended (keep-alive failed); if it stays ~1s the app kept running.
-    private var diagnosticsRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Image(systemName: keepAliveIsActive ? "location.circle.fill" : "location.circle")
-                    .foregroundStyle(keepAliveIsActive ? .green : .orange)
-                Text("background: \(keepAliveLabel) · max gap: \(String(format: "%.0f", coordinator.maxTickGap))s")
-                Spacer()
-                Button("Reset") { coordinator.resetDiagnostics() }
-                    .buttonStyle(.bordered)
+/// Liquid Glass "− +0.8 s +" pill. Nudges this song's sync (remembered per song).
+private struct SyncPill: View {
+    @EnvironmentObject var coordinator: NowPlayingCoordinator
+
+    var body: some View {
+        HStack(spacing: 4) {
+            nudge(-100, "minus", "Show lyrics later")
+            VStack(spacing: 0) {
+                Text("Sync").font(.caption2).foregroundStyle(.secondary)
+                Text(syncLabel(coordinator.userOffsetMs)).font(.subheadline.weight(.semibold).monospacedDigit())
             }
-            Text("location callback: \(locationUpdateAge) · activity attempts: \(coordinator.activityUpdateAttempts)")
-            Text("CarPlay: \(coordinator.isCarPlayConnected ? "connected" : "disconnected") · auto-start: Shortcuts → CarPlay connects → Start Car Lyrics")
-            Text("last activity attempt: \(activityAttemptAge) · gaps >3s: \(coordinator.tickGapEvents.count)")
-            // Read this when the widget looks frozen: see LiveActivityController.healthSummary.
-            Text("live activity: \(coordinator.activityHealth)")
-            if let latest = coordinator.tickGapEvents.last {
-                Text("latest gap: \(String(format: "%.1f", latest.gap))s at \(latest.timestamp.formatted(date: .abbreviated, time: .standard))")
-            }
+            .frame(minWidth: 72)
+            nudge(100, "plus", "Show lyrics earlier")
         }
-        .font(.caption.monospacedDigit())
-        .foregroundStyle(.secondary)
+        .padding(6)
+        .glassEffect(.regular, in: .capsule)
     }
 
-    private var keepAliveIsActive: Bool {
-        coordinator.keepAliveStatus == .active
-    }
-
-    private var keepAliveLabel: String {
-        switch coordinator.keepAliveStatus {
-        case .starting: "starting"
-        case .active: "active"
-        case .permissionRequired: "location permission required"
-        case .failed(let message): "failed (\(message))"
+    private func nudge(_ delta: Int, _ symbol: String, _ label: String) -> some View {
+        Button {
+            coordinator.setOffsetForCurrentSong(min(3000, max(-3000, coordinator.userOffsetMs + delta)))
+        } label: {
+            Image(systemName: symbol).font(.body.weight(.semibold)).frame(width: 44, height: 36)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
+}
 
-    private var locationUpdateAge: String {
-        guard let date = coordinator.lastLocationUpdate else { return "never" }
-        return "\(max(0, Int(Date().timeIntervalSince(date))))s ago"
-    }
+/// "+0.8 s", "0 s", "−0.3 s". Positive shows lyrics earlier.
+func syncLabel(_ ms: Int) -> String {
+    ms == 0 ? "0 s" : String(format: "%@%.1f s", ms > 0 ? "+" : "−", Double(abs(ms)) / 1000)
+}
 
-    private var activityAttemptAge: String {
-        guard let date = coordinator.lastActivityUpdateAttempt else { return "never" }
-        return "\(max(0, Int(Date().timeIntervalSince(date))))s ago"
-    }
+/// The song's artwork, heavily blurred and darkened, Apple Music lyrics style; the icon's night
+/// purple when there's no artwork.
+private struct ArtworkBackground: View {
+    let artwork: UIImage?
 
-    @ViewBuilder private var spotifyRow: some View {
-        if !SpotifyConfig.isConfigured {
-            Label("Set your Spotify Client ID in SpotifyConfig", systemImage: "exclamationmark.triangle")
-                .font(.caption)
-                .foregroundStyle(.orange)
-        } else if coordinator.spotify.isLoggedIn {
-            Button(role: .destructive) { coordinator.spotify.logout() } label: {
-                Label("Disconnect Spotify", systemImage: "xmark.circle")
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [Color(red: 0.35, green: 0.16, blue: 0.53), Color(red: 0.04, green: 0.06, blue: 0.19)],
+                           startPoint: .top, endPoint: .bottom)
+            if let artwork {
+                Image(uiImage: artwork)
+                    .resizable()
+                    .scaledToFill()
+                    .blur(radius: 70)
+                    .saturation(1.3)
+                    .transition(.opacity)
             }
-        } else {
-            Button {
-                Task {
-                    do {
-                        try await coordinator.spotify.login()
-                        spotifyError = nil
-                    } catch ASWebAuthenticationSessionError.canceledLogin {
-                        spotifyError = nil // user closed the sheet — not an error
-                    } catch {
-                        spotifyError = "Spotify login failed: \(error.localizedDescription)"
-                    }
-                }
-            } label: {
-                Label("Connect Spotify", systemImage: "music.note.list")
-            }
-            .buttonStyle(.borderedProminent)
-            if let spotifyError {
-                Text(spotifyError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
+            Color.black.opacity(0.35)
         }
+        .ignoresSafeArea()
+        .animation(.easeInOut(duration: 0.8), value: artwork)
     }
 }

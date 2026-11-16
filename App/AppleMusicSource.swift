@@ -34,6 +34,16 @@ final class AppleMusicSource {
         return .init(r: Double(pixel[0]) / 255, g: Double(pixel[1]) / 255, b: Double(pixel[2]) / 255)
     }
 
+    /// Now-playing artwork for the lyrics screen's background and header.
+    func artworkImage() -> UIImage? {
+        player.nowPlayingItem?.artwork?.image(at: CGSize(width: 600, height: 600))
+    }
+
+    /// Jump playback (tapping a lyric line, as in Apple Music's own lyrics view).
+    func seek(toMs ms: Int) {
+        player.currentPlaybackTime = Double(max(0, ms)) / 1000
+    }
+
     /// Read the current track + position on demand (position isn't pushed via notifications).
     func sampleNow() -> PlaybackState? {
         guard let item = player.nowPlayingItem else { return nil }

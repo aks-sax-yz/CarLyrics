@@ -107,6 +107,29 @@ final class LyricsStoreTests: XCTestCase {
         XCTAssertEqual(loaded, lyrics)
     }
 
+    func testEntriesExpire30DaysAfterTheLastPlayAndAPlayRenewsThem() throws {
+        let store = tempStore()
+        let lyrics = TimedLyrics(lines: [LyricsLine(timeMs: 1000, text: "hi")], isSynced: true)
+        let day: TimeInterval = 24 * 60 * 60
+        let now = Date()
+        func age(_ key: String, days: Double) throws {
+            try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-days * day)],
+                                                  ofItemAtPath: store.fileURL(for: key).path)
+        }
+        store.save(lyrics, key: "played")
+        try age("played", days: 29)
+        XCTAssertEqual(store.load(key: "played", now: now), lyrics)       // still fresh…
+        XCTAssertEqual(store.load(key: "played", now: now.addingTimeInterval(29 * day)), lyrics) // …and renewed by that play
+        store.save(lyrics, key: "stale")
+        try age("stale", days: 31)
+        XCTAssertNil(store.load(key: "stale", now: now))                  // expired, and deleted
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(for: "stale").path))
+        store.save(lyrics, key: "forgotten")
+        try age("forgotten", days: 40)
+        store.pruneExpired(now: now)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: store.fileURL(for: "forgotten").path))
+    }
+
     func testCacheFileNameIsStableAcrossLaunches() {
         // Must not depend on Swift's per-process-seeded hashValue, or the cache misses every launch.
         let name = tempStore().fileURL(for: "queen|bohemian rhapsody|354").lastPathComponent

@@ -77,8 +77,13 @@ struct LyricsSmallView: View {
                 .minimumScaleFactor(0.5)
                 .layoutPriority(1)
             Spacer(minLength: 0)
-            // The song clock as a bar along the bottom, so it doesn't take the title's room.
-            SongProgress(state: state)
+            // The song clock along the bottom (bar + "1:23 / 3:54"), so it doesn't take the title's room.
+            HStack(spacing: 6) {
+                SongProgress(state: state)
+                SongTime(state: state)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 12)

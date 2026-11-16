@@ -123,6 +123,36 @@ final class LRCLibSearchRankingTests: XCTestCase {
                        devanagari.syncedLyrics)
     }
 
+    /// LRC text for lines "l0"…"l7" every 2s from 10s, shifted by `shiftMs`.
+    private func lrc(shiftMs: Int) -> String {
+        (0..<8).map { i -> String in
+            let ms = 10_000 + i * 2_000 + shiftMs
+            return String(format: "[%02d:%05.2f]line %d", ms / 60_000, Double(ms % 60_000) / 1000, i)
+        }.joined(separator: "\n")
+    }
+
+    func testConsensusMovesTheChosenUploadToTheMedianTiming() {
+        let chosen = LRCParser.parse(lrc(shiftMs: 0))
+        // Three uploads 300ms later, one agreeing with ours, one from a different cut (+4.4s),
+        // one for a different-length track: the median of the comparable four is +300.
+        let versions = [r(lrc(shiftMs: 300), duration: 187), r(lrc(shiftMs: 300), duration: 187),
+                        r(lrc(shiftMs: 300), duration: 188), r(lrc(shiftMs: 0), duration: 187),
+                        r(lrc(shiftMs: 4_400), duration: 187), r(lrc(shiftMs: -900), duration: 240)]
+        // Uploads say lines come 300ms later than ours do, so ours must show 300ms later
+        // (offsetMs is "positive = sooner").
+        XCTAssertEqual(LRCLibClient.consensusOffsetMs(chosen, versions: versions, durationMs: 187_000), -300)
+        // Fewer than 3 comparable uploads: leave it alone.
+        XCTAssertEqual(LRCLibClient.consensusOffsetMs(chosen, versions: Array(versions.prefix(2)), durationMs: 187_000), 0)
+    }
+
+    func testLineShiftUsesEffectiveTimesAndNeedsCommonLines() {
+        let a = LRCParser.parse(lrc(shiftMs: 0))
+        var b = LRCParser.parse(lrc(shiftMs: 500))
+        b.offsetMs = 200 // an [offset:] tag of +200 shows b 200ms sooner: effective gap is 300
+        XCTAssertEqual(LRCLibClient.lineShiftMs(from: a, to: b), 300)
+        XCTAssertNil(LRCLibClient.lineShiftMs(from: a, to: LRCParser.parse("[00:10.00]something else")))
+    }
+
     func testSkipsResultsWithoutLyricsAndKeepsApiOrderOnTies() {
         XCTAssertNil(LRCLibClient.bestMatch([r(nil, duration: 200), r("", plain: "", duration: 200)], durationMs: nil))
         let best = LRCLibClient.bestMatch([r("[00:01.00]first", duration: 100), r("[00:01.00]second", duration: 300)], durationMs: nil)

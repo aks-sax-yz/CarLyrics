@@ -1,4 +1,5 @@
 import Foundation
+import os
 import AVFAudio
 import SwiftUI
 import CarLyricsCore
@@ -71,6 +72,8 @@ final class NowPlayingCoordinator: ObservableObject {
     /// Average colour of the current Apple Music artwork; nil for other sources or no art.
     private var albumColor: LyricsActivityAttributes.RGB?
     @Published private(set) var track: NowPlayingTrack?
+    /// Apple Music artwork for the lyrics screen; nil for other sources.
+    @Published private(set) var artwork: UIImage?
     @Published private(set) var lyrics: TimedLyrics?
     @Published private(set) var currentLineIndex: Int?
     @Published private(set) var status: String = "Idle" {
@@ -102,11 +105,20 @@ final class NowPlayingCoordinator: ObservableObject {
         liveActivity.resetDiagnostics()
         refreshActivityDiagnostics()
     }
-    @Published var userOffsetMs: Int {
-        didSet {
-            UserDefaults.standard.set(userOffsetMs, forKey: Self.offsetKey)
-            engine.userOffsetMs = userOffsetMs
-        }
+    /// The sync offset in effect: this song's saved one, else the default (the latest adjustment).
+    /// LRCLIB timings come from different uploaders, so each song can need its own.
+    @Published private(set) var userOffsetMs: Int {
+        didSet { engine.userOffsetMs = userOffsetMs }
+    }
+    private var songOffsets: [String: Int]
+
+    /// The Sync slider: remember it for the current song and as the default for unadjusted songs.
+    func setOffsetForCurrentSong(_ ms: Int) {
+        userOffsetMs = ms
+        UserDefaults.standard.set(ms, forKey: Self.offsetKey)
+        guard let key = track?.identityKey else { return }
+        songOffsets[key] = ms
+        UserDefaults.standard.set(songOffsets, forKey: Self.songOffsetsKey)
     }
 
     let appleMusic = AppleMusicSource()
@@ -121,7 +133,11 @@ final class NowPlayingCoordinator: ObservableObject {
     #endif
 
     private let lrclib = LRCLibClient()
-    private let store = LyricsStore.caches()
+    private let store: LyricsStore = {
+        let store = LyricsStore.caches()
+        store.pruneExpired() // lyrics not played for 30 days
+        return store
+    }()
     private let liveActivity = LiveActivityController()
     private var engine = SyncEngine()
 
@@ -132,14 +148,17 @@ final class NowPlayingCoordinator: ObservableObject {
     private var lastSpotifyPoll: Date?
     private var spotifyAnchor: PlaybackState?
     private var loopTask: Task<Void, Never>?
+    private var observingRoutes = false
     private var lyricsFetchToken = UUID()
     /// Set after a network/HTTP failure so the current song's lyrics are retried, not given up on.
     private var lyricsRetryAt: Date?
     private var wasInBackground = false
     private var lastHeartbeat = Date.distantPast
     private var songStartAnchor: Date?
+    private var anchorTrack: NowPlayingTrack?
 
     private static let offsetKey = "sync.userOffsetMs"
+    private static let songOffsetsKey = "sync.songOffsetsMs"
     private static let backgroundKey = "lyrics.background"
     private static let solidColorKey = "lyrics.solidColor"
     private static let transitionKey = "lyrics.transition"
@@ -153,6 +172,7 @@ final class NowPlayingCoordinator: ObservableObject {
 
     init() {
         userOffsetMs = UserDefaults.standard.integer(forKey: Self.offsetKey)
+        songOffsets = UserDefaults.standard.dictionary(forKey: Self.songOffsetsKey) as? [String: Int] ?? [:]
         lyricsBackground = UserDefaults.standard.string(forKey: Self.backgroundKey)
             .flatMap(LyricsBackground.init(rawValue:)) ?? .solid
         let rgb = UserDefaults.standard.array(forKey: Self.solidColorKey) as? [Double] ?? []
@@ -178,14 +198,29 @@ final class NowPlayingCoordinator: ObservableObject {
         keepAlive.start() // location keep-alive runs in every mode, independent of the mic
         handleCarPlayRouteChange()
         guard loopTask == nil else { return }
-        EventLog.log("app start mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
+        EventLog.log("app start state=\(Self.appState) build=\(Bundle.main.infoDictionary?["CFBundleVersion"] ?? "?") mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
         // Observer only once — start() can re-run from SwiftUI onAppear without meaning "restart".
         // Block observer on the main queue: AVAudioSession can post route changes off the main
         // thread, and a selector into this @MainActor class would trip Swift 6's isolation check.
-        _ = NotificationCenter.default.addObserver(
-            forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handleCarPlayRouteChange() }
+        if !observingRoutes { // the loop can restart after Stop Car Lyrics; the observers stay
+            observingRoutes = true
+            // System pressure that could explain a frozen widget, for the event log.
+            let center = NotificationCenter.default
+            for (name, label) in [(UIApplication.didReceiveMemoryWarningNotification, "memory warning"),
+                                  (UIApplication.willTerminateNotification, "will terminate"),
+                                  (ProcessInfo.thermalStateDidChangeNotification, "thermal changed"),
+                                  (Notification.Name.NSProcessInfoPowerStateDidChange, "power mode changed")] {
+                _ = center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                    MainActor.assumeIsolated {
+                        EventLog.log("system \(label): thermal=\(ProcessInfo.processInfo.thermalState.rawValue) lowpower=\(ProcessInfo.processInfo.isLowPowerModeEnabled) mem=\(os_proc_available_memory() / 1_048_576)MBfree")
+                    }
+                }
+            }
+            _ = NotificationCenter.default.addObserver(
+                forName: AVAudioSession.routeChangeNotification, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.handleCarPlayRouteChange() }
+            }
         }
         loopTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -205,6 +240,54 @@ final class NowPlayingCoordinator: ObservableObject {
         refreshActivityDiagnostics()
     }
 
+    /// Tapping a lyric line jumps Apple Music to where that line shows (the other sources can't seek).
+    var canSeek: Bool { track?.source == .appleMusic && lyrics?.isSynced == true }
+
+    func seek(toLine index: Int) {
+        guard canSeek, let lyrics, lyrics.lines.indices.contains(index) else { return }
+        // A line shows when position + user offset + file offset reaches its time (see SyncEngine).
+        appleMusic.seek(toMs: lyrics.lines[index].timeMs - lyrics.offsetMs - userOffsetMs)
+        EventLog.log("seek to line \(index + 1) by tap")
+    }
+
+    /// "Car Lyrics froze" (Siri / Shortcuts): a marked snapshot in the log at the moment the user
+    /// saw the widget stuck, to line up with the push log and the system's jetsam reports.
+    func markFreeze() {
+        let session = AVAudioSession.sharedInstance()
+        let am = appleMusic.sampleNow().map { "\($0.isPlaying ? "playing" : "paused")@\($0.positionMs / 1000)s" } ?? "none"
+        let line = currentLineIndex.map { "\($0 + 1)/\(lyrics?.lines.count ?? 0)" } ?? "-"
+        EventLog.log("FREEZE REPORTED state=\(Self.appState) song=\"\(track?.title ?? "-")\" line=\(line) act=[\(liveActivity.healthSummary)] lastPush=\(liveActivity.lastUpdateAttempt.map { "\(Int(Date().timeIntervalSince($0)))s ago" } ?? "never") am=\(am) other=\(session.isOtherAudioPlaying) carplay=\(isCarPlayConnected) loop=\(loopTask != nil) keepalive=\(keepAliveStatus) mem=\(os_proc_available_memory() / 1_048_576)MBfree thermal=\(ProcessInfo.processInfo.thermalState.rawValue)")
+    }
+
+    private static var appState: String {
+        switch UIApplication.shared.applicationState {
+        case .active: "fg"
+        case .inactive: "inactive"
+        case .background: "bg"
+        @unknown default: "?"
+        }
+    }
+
+    /// `StopLyricsIntent` entry point: end every lyrics activity, stop the loop, the mic and the
+    /// location keep-alive, and clear the song, so nothing keeps the app awake. Opening the app
+    /// (or the Start intent) brings it all back via `start()`.
+    func stopFromIntent() async {
+        EventLog.log("intent: stop lyrics")
+        loopTask?.cancel()
+        loopTask = nil
+        keepAlive.stop()
+        setAutoListening(false)
+        if sourceMode == .shazam { shazamSource.stop() }
+        await liveActivity.endAll()
+        lastPlayback = nil
+        track = nil
+        artwork = nil
+        lyrics = nil
+        currentLineIndex = nil
+        status = "Stopped"
+        refreshActivityDiagnostics()
+    }
+
     /// Becoming active swaps in a fresh Live Activity if the current one is a leftover or has
     /// been through the background — so a frozen widget recovers just by opening the app (no
     /// clearing it, no force-quit). See `LiveActivityController.restart()`.
@@ -212,6 +295,7 @@ final class NowPlayingCoordinator: ObservableObject {
         EventLog.log("phase \(phase)")
         switch phase {
         case .active:
+            start() // idempotent; restarts the loop after a Stop Car Lyrics run
             keepAlive.appBecameActive()
             Task { await liveActivity.restart(); refreshActivityDiagnostics() }
             wasInBackground = false
@@ -271,7 +355,9 @@ final class NowPlayingCoordinator: ObservableObject {
 
         if playback.track.isDifferentSong(from: track) {
             track = playback.track
+            userOffsetMs = songOffsets[playback.track.identityKey] ?? UserDefaults.standard.integer(forKey: Self.offsetKey)
             albumColor = playback.track.source == .appleMusic ? appleMusic.artworkColor() : nil
+            artwork = playback.track.source == .appleMusic ? appleMusic.artworkImage() : nil
             EventLog.log("song \"\(playback.track.title)\" — \(playback.track.artist) [\(playback.track.source.rawValue)]")
             loadLyrics(for: playback.track) // non-blocking: fetch runs async, loop keeps ticking
         } else if let retryAt = lyricsRetryAt, now >= retryAt {
@@ -385,6 +471,7 @@ final class NowPlayingCoordinator: ObservableObject {
                 let fetched = try await lrclib.lyrics(for: track)
                 guard lyricsFetchToken == token else { return } // superseded by a newer song
                 let display = Transliterator.romanized(fetched)
+                EventLog.log("lyrics \"\(track.title)\" \(fetched.source ?? "?") lines=\(fetched.lines.count) synced=\(fetched.isSynced) offset=\(fetched.offsetMs)ms")
                 lyrics = display
                 store.save(fetched, for: track) // original script, so romanizer fixes reach cached songs
                 status = display.isSynced ? "Synced lyrics" : "Plain lyrics (no timing)"
@@ -486,9 +573,14 @@ final class NowPlayingCoordinator: ObservableObject {
         let duration = playback.track.durationMs
         var start: Date?
         if playback.isPlaying, duration != nil {
-            start = Self.steadySongStart(previous: songStartAnchor,
-                                         candidate: Date().addingTimeInterval(-Double(positionMs) / 1000))
-            songStartAnchor = start
+            let steady = Self.steadySongStart(previous: songStartAnchor,
+                                              candidate: Date().addingTimeInterval(-Double(positionMs) / 1000))
+            if let old = songStartAnchor, steady != old, !playback.track.isDifferentSong(from: anchorTrack) {
+                EventLog.log("anchor moved \(Int(steady.timeIntervalSince(old) * 1000))ms")
+            }
+            start = steady
+            songStartAnchor = steady
+            anchorTrack = playback.track
         }
         return LyricsActivityAttributes.ContentState(
             title: playback.track.title,
@@ -514,11 +606,13 @@ final class NowPlayingCoordinator: ObservableObject {
         }
     }
 
-    /// Keep the previous song-start anchor unless the new estimate moved by more than 1.5s (a
-    /// seek, a new song, a resume). Each tick's estimate jitters by a few ms; without this every
-    /// tick would differ from the last push and re-push the Live Activity.
+    /// Keep the previous song-start anchor unless the new estimate moved by more than 0.25s. Each
+    /// tick's estimate jitters by a few ms; without a threshold every tick would re-push the Live
+    /// Activity. It was 1.5s, but the clocked lyric window schedules every line from this anchor,
+    /// so a stale first reading (Apple Music still buffering at song start) stuck for the whole song
+    /// as a per-song delay of up to 1.5s. `anchor moved` lines in events.log show how often it corrects.
     nonisolated static func steadySongStart(previous: Date?, candidate: Date) -> Date {
-        if let previous, abs(previous.timeIntervalSince(candidate)) < 1.5 { return previous }
+        if let previous, abs(previous.timeIntervalSince(candidate)) < 0.25 { return previous }
         return candidate
     }
 
@@ -526,6 +620,7 @@ final class NowPlayingCoordinator: ObservableObject {
         lastPlayback = nil
         spotifyAnchor = nil
         track = nil
+        artwork = nil
         lyrics = nil
         currentLineIndex = nil
         status = "Nothing playing"
@@ -551,7 +646,14 @@ final class NowPlayingCoordinator: ObservableObject {
         lastHeartbeat = now
         let line = currentLineIndex.map { "\($0 + 1)/\(lyrics?.lines.count ?? 0)" } ?? "-"
         let loc = lastLocationUpdate.map { "\(Int(now.timeIntervalSince($0)))s" } ?? "never"
-        EventLog.log("hb \(wasInBackground ? "bg" : "fg") mode=\(sourceMode.rawValue) song=\"\(track?.title ?? "-")\" line=\(line) act=[\(liveActivity.healthSummary)] pushes=\(liveActivity.updateAttempts) loc=\(loc) carplay=\(isCarPlayConnected)")
+        // Audio output delay iOS reports for the current route (CarPlay / Bluetooth / speaker).
+        // Logged, not applied yet: unproven that it matches Apple Music's audible lag.
+        let session = AVAudioSession.sharedInstance()
+        let out = "\(session.currentRoute.outputs.first?.portType.rawValue ?? "-") lat=\(Int(session.outputLatency * 1000))ms"
+        // Freeze triage (2026-11-16 drive: stuck 15 min on a song Apple Music reported as paused while
+        // "other audio" played): what Apple Music claims vs whether anything is audible at all.
+        let am = appleMusic.sampleNow().map { "\($0.isPlaying ? "playing" : "paused")@\($0.positionMs / 1000)s" } ?? "none"
+        EventLog.log("hb \(Self.appState) mem=\(os_proc_available_memory() / 1_048_576)MBfree thermal=\(ProcessInfo.processInfo.thermalState.rawValue) lowpower=\(ProcessInfo.processInfo.isLowPowerModeEnabled) mode=\(sourceMode.rawValue) song=\"\(track?.title ?? "-")\" line=\(line) act=[\(liveActivity.healthSummary)] pushes=\(liveActivity.updateAttempts) loc=\(loc) auth=\(keepAlive.authorizationLabel) carplay=\(isCarPlayConnected) out=\(out) sync=\(userOffsetMs)ms am=\(am) other=\(session.isOtherAudioPlaying)")
     }
 
     private func recordTickGap(_ gap: TimeInterval, at timestamp: Date) {

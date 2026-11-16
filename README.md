@@ -119,6 +119,8 @@ in `Documents/events.log` on the phone:
 xcrun devicectl device copy from --device <iphone-id> --domain-type appDataContainer \
   --domain-identifier com.akshatsaxena01.carlyrics --source Documents/events.log --destination .
 ```
+A SideStore install signs the app with your team ID appended, so use
+`com.akshatsaxena01.carlyrics.<TEAMID>` (e.g. `….3HT9UJ3NF5`) as the domain identifier.
 
 ## Limitations & honest notes
 

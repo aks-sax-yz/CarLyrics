@@ -63,8 +63,11 @@ final class ActivityPolicyTests: XCTestCase {
     func testSongStartStaysSteadyThroughJitterButFollowsSeeks() {
         let anchor = Date(timeIntervalSince1970: 1_000)
         // Per-tick jitter keeps the old anchor, so the live timer doesn't force a push per tick.
-        XCTAssertEqual(NowPlayingCoordinator.steadySongStart(previous: anchor, candidate: anchor.addingTimeInterval(0.4)), anchor)
-        XCTAssertEqual(NowPlayingCoordinator.steadySongStart(previous: anchor, candidate: anchor.addingTimeInterval(-1.4)), anchor)
+        XCTAssertEqual(NowPlayingCoordinator.steadySongStart(previous: anchor, candidate: anchor.addingTimeInterval(0.1)), anchor)
+        XCTAssertEqual(NowPlayingCoordinator.steadySongStart(previous: anchor, candidate: anchor.addingTimeInterval(-0.2)), anchor)
+        // A stale start reading as small as 0.4s is corrected; lyrics are scheduled from this anchor.
+        let corrected = anchor.addingTimeInterval(0.4)
+        XCTAssertEqual(NowPlayingCoordinator.steadySongStart(previous: anchor, candidate: corrected), corrected)
         // A seek / new song moves it.
         let seek = anchor.addingTimeInterval(-30)
         XCTAssertEqual(NowPlayingCoordinator.steadySongStart(previous: anchor, candidate: seek), seek)
