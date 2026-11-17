@@ -6,7 +6,7 @@ import Foundation
 /// touched, so English (and accented European text like "café") passes through untouched.
 ///
 /// Output is phonetic and best-effort:
-///  - Hindi gets an extra word-final schwa-drop ("tuma"→"tum") for readable Hinglish.
+///  - Hindi (Devanagari) goes through `Hinglish`, which spells it the way people type it.
 ///  - CJK is approximate: Han characters romanize via Mandarin pinyin (so Japanese kanji come out
 ///    as Chinese readings), though kana/Hangul romanize correctly.
 /// Perfect, language-aware romanization would need an LLM/API per song.
@@ -26,32 +26,13 @@ public enum Transliterator {
     }
 
     /// Non-Latin → Latin, diacritics stripped. Idempotent on already-Latin text (safe to re-apply
-    /// to cached lyrics). Pass `devanagari: true` to also drop Hindi's word-final inherent schwa.
-    public static func romanize(_ s: String, devanagari: Bool = false) -> String {
+    /// to cached lyrics). Devanagari gets the Hinglish rules; other scripts use ICU.
+    public static func romanize(_ s: String) -> String {
+        if containsDevanagari(s) { return Hinglish.romanize(s) }
         let m = NSMutableString(string: s)
         CFStringTransform(m, nil, kCFStringTransformToLatin, false)
-        // Schwa-drop BEFORE stripping marks: "tuma"→"tum", "dila"→"dil". Safe because a real
-        // long-ā still carries a combining macron here (last scalar isn't a bare 'a'). Hindi only
-        // — dropping a final 'a' would break e.g. Japanese "sakura". ponytail: word-final only;
-        // internal schwas ("ajanabi") remain — full schwa-deletion needs a lexicon.
-        let latin = devanagari ? dropFinalSchwa(m as String) : (m as String)
-        let m2 = NSMutableString(string: latin)
-        CFStringTransform(m2, nil, kCFStringTransformStripCombiningMarks, false)
-        return m2 as String
-    }
-
-    private static let consonants = Set("bcdfghjklmnpqrstvwxyz")
-
-    private static func dropFinalSchwa(_ s: String) -> String {
-        s.components(separatedBy: " ").map { token -> String in
-            let scalars = Array(token.unicodeScalars)
-            guard scalars.count >= 2, scalars.last == "a" else { return token }
-            let prev = Character(scalars[scalars.count - 2])
-            guard consonants.contains(Character(prev.lowercased())) else { return token }
-            var out = String.UnicodeScalarView()
-            out.append(contentsOf: scalars.dropLast())
-            return String(out)
-        }.joined(separator: " ")
+        CFStringTransform(m, nil, kCFStringTransformStripCombiningMarks, false)
+        return m as String
     }
 
     /// Romanize every non-Latin line (and its word-level timings, if any) in place.
@@ -61,11 +42,11 @@ public enum Transliterator {
         out.lines = lyrics.lines.map { line in
             guard needsRomanization(line.text) else { return line }
             var l = line
-            l.text = romanize(line.text, devanagari: containsDevanagari(line.text))
+            l.text = romanize(line.text)
             l.words = line.words?.map { word in
                 guard needsRomanization(word.text) else { return word }
                 var w = word
-                w.text = romanize(word.text, devanagari: containsDevanagari(word.text))
+                w.text = romanize(word.text)
                 return w
             }
             return l

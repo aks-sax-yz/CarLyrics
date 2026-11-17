@@ -11,22 +11,24 @@ struct LyricsLiveActivityWidget: Widget {
             // Presentation is family-aware: the full lock-screen layout on the phone, a
             // tighter one-line layout in CarPlay / Watch Smart Stack (the `.small` family).
             LyricsActivityView(state: context.state)
-                .activityBackgroundTint(.black.opacity(0.85))
-                .activitySystemActionForegroundColor(.white)
+                .foregroundStyle(context.state.ink)
+                .activityBackgroundTint(context.state.background?.color ?? .clear) // clear → the system glass shows
+                .activitySystemActionForegroundColor(context.state.ink)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.center) {
                     VStack(spacing: 4) {
-                        Text(context.state.currentLine.isEmpty ? "♪" : context.state.currentLine)
+                        ClockedText(lines: context.state.lines ?? [], fallback: context.state.currentLine,
+                                    style: context.state.transition ?? .instant)
                             .font(.headline)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
-                        if let next = context.state.nextLine {
-                            Text(next)
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+                            .minimumScaleFactor(0.6)
+                        NextLine(state: context.state)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.7)
                     }
                 }
             } compactLeading: {
@@ -63,20 +65,25 @@ struct LyricsSmallView: View {
     let state: LyricsActivityAttributes.ContentState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 4) {
-                Text("\(state.title) — \(state.artist)")
-                    .lineLimit(1)
-                Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 3) {
+            SongTitle(state: state)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            // Long lines wrap to 2 lines and shrink to fit rather than end in "…"; the lyric
+            // wins the height over the title row.
+            ClockedText(lines: state.lines ?? [], fallback: state.currentLine, style: state.transition ?? .instant)
+                .font(.title3.weight(.bold))
+                .lineLimit(2)
+                .minimumScaleFactor(0.5)
+                .layoutPriority(1)
+            Spacer(minLength: 0)
+            // The song clock along the bottom (bar + "1:23 / 3:54"), so it doesn't take the title's room.
+            HStack(spacing: 6) {
+                SongProgress(state: state)
                 SongTime(state: state)
             }
             .font(.caption2)
-            .foregroundStyle(.white.opacity(0.6))
-            Text(state.currentLine.isEmpty ? "♪ ♪ ♪" : state.currentLine)
-                .font(.title3.weight(.bold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .minimumScaleFactor(0.6)
+            .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
@@ -94,29 +101,27 @@ struct LyricsLockScreenView: View {
             HStack(spacing: 6) {
                 Image(systemName: state.isPlaying ? "waveform" : "pause.fill")
                     .font(.caption)
-                Text("\(state.title) — \(state.artist)")
+                SongTitle(state: state)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
-            Text(state.currentLine.isEmpty ? "♪ ♪ ♪" : state.currentLine)
+            ClockedText(lines: state.lines ?? [], fallback: state.currentLine, style: state.transition ?? .instant)
                 .font(.title3.weight(.bold))
-                .foregroundStyle(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.5)
+                .layoutPriority(1)
+            NextLine(state: state)
+                .font(.body)
+                .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
-            if let next = state.nextLine, !next.isEmpty {
-                Text(next)
-                    .font(.body)
-                    .foregroundStyle(.white.opacity(0.55))
-                    .lineLimit(1)
-            }
             if state.durationMs != nil {
                 HStack(spacing: 8) {
                     SongProgress(state: state)
                     SongTime(state: state)
                 }
                 .font(.caption)
-                .foregroundStyle(.white.opacity(0.6))
+                .foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -161,7 +166,127 @@ struct SongProgress: View {
                     ProgressView(value: Double(min(state.pausedPositionMs ?? 0, durationMs)), total: Double(durationMs))
                 }
             }
-            .tint(.white)
+            .tint(state.ink)
         }
     }
+}
+
+/// The current lyric. While playing synced lyrics, `lines` holds the upcoming lines with start
+/// times and every one is drawn in the same spot, each masked to [its start, the next start) by
+/// timer ProgressViews. iOS animates those on its own clock like the song timer, so lines switch on
+/// time with no push per line. ponytail: masking with timer views isn't a documented use; if a future
+/// iOS stops animating them, lines freeze until the next window push (every 8 lines).
+///
+/// `style` is built from the same sweep, since nothing else animates in a Live Activity (no fades or
+/// slides): `wipe` reveals the new line left → right over the old one; `karaoke` draws the line dim
+/// and lights it left → right over its own duration.
+struct ClockedText: View {
+    let lines: [LyricsActivityAttributes.TimedLine]
+    let fallback: String
+    var placeholder = "♪ ♪ ♪" // for instrumental gaps
+    var style: LyricsActivityAttributes.Transition = .instant
+
+    var body: some View {
+        if lines.isEmpty {
+            // Pushed per line (Morph, paused, Listen): iOS morphs the old text into the new.
+            Text(fallback.isEmpty ? placeholder : fallback)
+                .contentTransition(.interpolate)
+        } else {
+            let sweep = style == .wipe ? 0.4 : 0.1
+            ZStack(alignment: .leading) {
+                ForEach(lines.indices, id: \.self) { i in
+                    line(i)
+                        .mask { Step(at: lines[i].at, duration: sweep) }
+                        .mask {
+                            // Hidden wherever the next line has already swept in.
+                            if i + 1 < lines.count { Step(at: lines[i + 1].at, duration: sweep, inverted: true) } else { Color.black }
+                        }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func line(_ i: Int) -> some View {
+        let text = Text(lines[i].text.isEmpty ? placeholder : lines[i].text)
+        if style == .karaoke {
+            // One row, shrunk to fit: a left → right sweep can't follow text onto a second row (it
+            // lit both rows at once), and a per-row sweep would need the wrap point, which the
+            // widget can't know. Long lines are split at 32 chars anyway, so the shrink is mild.
+            let sung = max(i + 1 < lines.count ? lines[i + 1].at.timeIntervalSince(lines[i].at) : 3, 0.2)
+            let row = text.lineLimit(1)
+            row.opacity(0.4)
+                .overlay { row.mask { Step(at: lines[i].at, duration: sung) } }
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            text.frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// The dimmed read-ahead line: during line i it shows line i+1 (nothing after the last). Same
+/// transition as the current line, except karaoke, which only makes sense on the line being sung.
+struct NextLine: View {
+    let state: LyricsActivityAttributes.ContentState
+
+    var body: some View {
+        let lines = state.lines ?? []
+        if lines.isEmpty {
+            if let next = state.nextLine, !next.isEmpty { Text(next).contentTransition(.interpolate) }
+        } else {
+            ClockedText(lines: lines.indices.map { .init(text: $0 + 1 < lines.count ? lines[$0 + 1].text : "", at: lines[$0].at) },
+                        fallback: "", placeholder: "", style: state.transition == .wipe ? .wipe : .instant)
+        }
+    }
+}
+
+/// A mask revealed left → right from `at` over `duration` (`inverted`: hidden left → right instead):
+/// a timer ProgressView stretched over the whole text. Its grey track would leak every other line as
+/// a faint ghost, so it's flattened onto black and contrast-boosted: the white fill stays white
+/// (opaque), the track drops to black (clear).
+struct Step: View {
+    let at: Date
+    var duration: TimeInterval = 0.1
+    var inverted = false
+
+    var body: some View {
+        let fill = ZStack {
+            Color.black
+            ProgressView(timerInterval: at...at.addingTimeInterval(duration), countsDown: false) {
+                EmptyView()
+            } currentValueLabel: { EmptyView() }
+                .progressViewStyle(.linear)
+                .tint(.white)
+                .scaleEffect(x: 1.1, y: 60)
+        }
+        .compositingGroup()
+        .contrast(3)
+        Group {
+            if inverted { fill.colorInvert() } else { fill }
+        }
+        .luminanceToAlpha()
+    }
+}
+
+/// "Title — Artist" when it fits, else just the title, shrunk as a last resort, so the song name
+/// is never what gets cut. (A Live Activity can't scroll text: only system timers animate.)
+struct SongTitle: View {
+    let state: LyricsActivityAttributes.ContentState
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            Text("\(state.title) — \(state.artist)")
+            Text(state.title)
+            Text(state.title).minimumScaleFactor(0.6)
+        }
+        .lineLimit(1)
+    }
+}
+
+extension LyricsActivityAttributes.ContentState {
+    /// Text colour for the background: the system's primary on glass, else black or white.
+    var ink: Color { background.map { $0.wantsDarkText ? .black : .white } ?? .primary }
+}
+
+extension LyricsActivityAttributes.RGB {
+    var color: Color { Color(red: r, green: g, blue: b) }
 }

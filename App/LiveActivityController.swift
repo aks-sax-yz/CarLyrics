@@ -164,8 +164,11 @@ final class LiveActivityController {
               Self.shouldPush(state: state, lastState: lastState)
         else { return }
         recordAttempt(at: now)
+        let what = Self.describe(state, comparedTo: lastState)
         await box.update(content(for: state, now: now))
-        maxPushLatency = max(maxPushLatency, Date().timeIntervalSince(now))
+        let took = Date().timeIntervalSince(now)
+        maxPushLatency = max(maxPushLatency, took)
+        EventLog.log("push \(box.shortID) \(what) took=\(Int(took * 1000))ms seen=\(box.activity.content.state == state)")
         lastState = state
         // The local `Activity.content` refreshes a beat after `update` returns, so one mismatch is
         // normal (seen in the simulator). Only 3 pushes in a row unacknowledged means iOS is
@@ -178,12 +181,38 @@ final class LiveActivityController {
         systemHasLatest = accepted
     }
 
+    /// One-line summary of a push for the log: why it differs from the last one, which lyric window
+    /// it carries and until when, and its encoded size (ActivityKit's limit is 4KB).
+    nonisolated static func describe(_ state: LyricsActivityAttributes.ContentState,
+                                     comparedTo old: LyricsActivityAttributes.ContentState?) -> String {
+        var why: [String] = []
+        if old == nil { why.append("first") }
+        if state.title != old?.title { why.append("song") }
+        if old != nil, state.isPlaying != old?.isPlaying { why.append(state.isPlaying ? "play" : "pause") }
+        if old != nil, state.songStart != old?.songStart { why.append("anchor") }
+        if state.lines != old?.lines { why.append("window") }
+        if state.currentLine != old?.currentLine || state.nextLine != old?.nextLine { why.append("line") }
+        if old != nil, state.background != old?.background || state.transition != old?.transition { why.append("style") }
+        let lines = state.lines ?? []
+        let until = lines.last.map { " until=\($0.at.formatted(date: .omitted, time: .standard))" } ?? ""
+        let bytes = (try? JSONEncoder().encode(state).count) ?? -1
+        return "[\(why.joined(separator: ","))] \"\(state.title)\" lines=\(lines.count)\(until) bytes=\(bytes)"
+    }
+
     func endCurrent() async {
         guard let box else { return }
         self.box = nil
         lastState = nil
         EventLog.log("activity \(box.shortID) ended by app")
         await box.end()
+    }
+
+    /// End this session's activity and any other lyrics activity iOS still has (Stop Car Lyrics).
+    func endAll() async {
+        await endCurrent()
+        for activity in Activity<LyricsActivityAttributes>.activities {
+            await ActivityBox(activity).end()
+        }
     }
 
     func resetDiagnostics() {

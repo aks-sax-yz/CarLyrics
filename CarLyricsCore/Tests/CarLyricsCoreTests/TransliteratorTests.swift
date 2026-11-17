@@ -25,6 +25,27 @@ final class TransliteratorTests: XCTestCase {
         XCTAssertEqual(Transliterator.romanized(lyrics).lines[0].text, "tum hi ho")
     }
 
+    func testHindiComesOutAsTypedHinglish() {
+        // ICU gave "mem", "haim", "karate", "bha'i", "cale", "nausa" for these.
+        let cases = [
+            "में": "mein", "हैं": "hain", "हूँ": "hoon", "मैं": "main", "नहीं": "nahi", "भाई": "bhai",
+            "करते": "karte", "जानती": "jaanti", "कितने": "kitne", "रहती": "rehti", "चले": "chale",
+            "छोटे": "chhote", "पीछे": "peeche", "पूछा": "poocha", "ज़िंदगी": "zindagi", "मोहब्बत": "mohabbat",
+            "समझना": "samajhna", "धड़कन": "dhadkan", "वज़न": "wazan", "आवाज़": "aawaaz", "विश्वास": "vishwaas",
+            "अच्छा": "accha", "ज्ञान": "gyaan", "गए": "gaye", "गई": "gayi", "फाड़ू": "faadu", "क़िस्मत": "qismat",
+            "ख़ूंख़ार": "khoonkhaar", "संभाल": "sambhaal", "क्यों": "kyun", "मुँह": "muh",
+        ]
+        for (hindi, hinglish) in cases {
+            XCTAssertEqual(Transliterator.romanize(hindi), hinglish, hindi)
+        }
+    }
+
+    func testMixedLineLeavesEnglishWordsAlone() {
+        // ICU's schwa-drop used to clip the English too ("papa" → "pap").
+        XCTAssertEqual(Transliterator.romanize("छोटे मोटे rapper'on का papa है"), "chhote mote rapper'on ka papa hai")
+        XCTAssertEqual(Transliterator.romanize("Movie में जी रहे हैं hero कवि"), "Movie mein ji rahe hain hero kavi")
+    }
+
     func testRomanizesOtherScripts() {
         // Non-Devanagari scripts fold to Latin too — and must NOT get the Hindi schwa-drop.
         let lyrics = TimedLyrics(lines: [

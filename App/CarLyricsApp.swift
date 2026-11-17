@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct CarLyricsApp: App {
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var coordinator = NowPlayingCoordinator()
+    @StateObject private var coordinator = NowPlayingCoordinator.shared
 
     var body: some Scene {
         WindowGroup {

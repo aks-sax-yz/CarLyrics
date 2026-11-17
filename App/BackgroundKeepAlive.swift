@@ -28,6 +28,17 @@ final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
     private(set) var lastError: String?
 
     var authorizationStatus: CLAuthorizationStatus { manager.authorizationStatus }
+    /// For the log: "Always" may be what lets a Shortcuts-launched (background) app restart this.
+    var authorizationLabel: String {
+        switch manager.authorizationStatus {
+        case .authorizedAlways: "always"
+        case .authorizedWhenInUse: "whenInUse"
+        case .denied: "denied"
+        case .restricted: "restricted"
+        case .notDetermined: "notDetermined"
+        @unknown default: "?"
+        }
+    }
     var status: Status {
         Self.currentStatus(
             authorization: authorizationStatus,
@@ -89,6 +100,17 @@ final class BackgroundKeepAlive: NSObject, CLLocationManagerDelegate {
             return
         }
         startLocationUpdatesIfAuthorized()
+    }
+
+    /// Stop Car Lyrics: drop the background grant so iOS can suspend the app.
+    func stop() {
+        guard running else { return }
+        running = false
+        manager.stopUpdatingLocation()
+        manager.allowsBackgroundLocationUpdates = false
+        backgroundSession?.invalidate()
+        backgroundSession = nil
+        lastLocationUpdate = nil
     }
 
     /// A background-created session can only rejoin an existing grant. Recreate it whenever the

@@ -65,9 +65,10 @@ project.yml        xcodegen project definition
 1. Play a song (Apple Music or Spotify) with the app open once so it starts the Live Activity.
 2. On the iPhone: **Settings › General › CarPlay › [your car] › Widgets** → add the **Lyrics**
    widget to a stack.
-3. Create the required one-time automation: **Shortcuts › Automation › + › CarPlay › Connects ›
-   Run Immediately › New Blank Automation › Open App › Car Lyrics**. iOS provides no API for an
-   ordinary app to launch itself when CarPlay connects; the automation is the supported trigger.
+3. Create the one-time automation: **Shortcuts › Automation › + › CarPlay › Connects ›
+   Run Immediately › New Blank Automation › Start Car Lyrics**. That action starts the lyrics
+   Live Activity without opening the app, even with the phone locked. iOS has no "music started"
+   trigger for apps; "App › Music › Is Opened" works as a second automation with the same action.
 4. Connect to CarPlay — the lyrics appear on the widgets screen. Tune the **Sync** slider in
    the app until lines line up in your car.
 
@@ -118,13 +119,16 @@ in `Documents/events.log` on the phone:
 xcrun devicectl device copy from --device <iphone-id> --domain-type appDataContainer \
   --domain-identifier com.akshatsaxena01.carlyrics --source Documents/events.log --destination .
 ```
+A SideStore install signs the app with your team ID appended, so use
+`com.akshatsaxena01.carlyrics.<TEAMID>` (e.g. `….3HT9UJ3NF5`) as the domain identifier.
 
 ## Limitations & honest notes
 
 - **Background:** the app process must be alive to poll Spotify and submit local ActivityKit
   updates. A Core Location background session keeps the process eligible after the screen locks,
   but ActivityKit can still throttle the visible Live Activity. The CarPlay-connect Shortcuts
-  automation above launches the app; no public API lets the app install that automation itself.
+  automation above starts the activity via `StartLyricsIntent`; no public API lets the app install
+  that automation itself.
 - **Spotify token storage** uses `UserDefaults` (personal build). Move to Keychain before any
   wider distribution.
 - **Lyrics licensing:** LRCLIB is community-contributed and unlicensed — fine for personal

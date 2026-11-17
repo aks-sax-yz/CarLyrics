@@ -91,6 +91,8 @@ public struct TimedLyrics: Equatable, Codable, Sendable {
     public var isSynced: Bool
     /// Global offset in ms from the `[offset:]` LRC tag (positive makes lyrics appear sooner).
     public var offsetMs: Int
+    /// Where these came from, for the debug log (e.g. "lrclib get id=… uploads=14 consensus=-120ms").
+    public var source: String? = nil
 
     public init(lines: [LyricsLine], isSynced: Bool, offsetMs: Int = 0) {
         self.lines = lines
