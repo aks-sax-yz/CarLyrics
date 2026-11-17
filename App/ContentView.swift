@@ -11,7 +11,7 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                ArtworkBackground(artwork: coordinator.artwork)
+                ArtworkBackground()
                 VStack(spacing: 0) {
                     if coordinator.track != nil { NowPlayingHeader() }
                     lyricsOrPlaceholder
@@ -81,48 +81,67 @@ private struct NowPlayingHeader: View {
     }
 }
 
-/// Big, bold lines; the current one bright, others dimmed and blurred by distance; centred on
-/// the current line as it moves. Tapping a line seeks Apple Music to it.
+/// Big, bold lines; the current one bright, the rest dimmed; tap a line to seek Apple Music to it.
+/// Smoothness: lines switch exactly when they start (a TimelineView on the coordinator's
+/// `lineDates`, not the 1s tick); one spring animates the whole list (opacity + scale only, no
+/// per-line blur); the current line sits in the upper third like Apple Music; auto-scroll pauses
+/// while you scroll and picks up again 3s after you let go.
 private struct LyricsList: View {
     @EnvironmentObject var coordinator: NowPlayingCoordinator
     let lyrics: TimedLyrics
+    @State private var holdAutoScrollUntil = Date.distantPast
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 26) {
-                    ForEach(Array(lyrics.lines.enumerated()), id: \.offset) { index, line in
-                        lineView(index: index, text: line.text)
-                            .id(index)
+        TimelineView(.explicit(coordinator.lineDates)) { context in
+            let current = currentLine(at: context.date)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 26) {
+                        ForEach(Array(lyrics.lines.enumerated()), id: \.offset) { index, line in
+                            lineView(index: index, text: line.text, current: current)
+                                .id(index)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 200) // lets the first and last lines reach the focus point
+                    .animation(.spring(response: 0.35, dampingFraction: 0.9), value: current)
+                }
+                .scrollIndicators(.hidden)
+                .onScrollPhaseChange { _, phase in
+                    // Hand-scrolling: leave the view where the user put it for a moment.
+                    if phase != .idle { holdAutoScrollUntil = .now.addingTimeInterval(3) }
+                }
+                .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.08),
+                                             .init(color: .black, location: 0.88), .init(color: .clear, location: 1)],
+                                     startPoint: .top, endPoint: .bottom))
+                .onChange(of: current, initial: true) { _, index in
+                    guard let index, Date() > holdAutoScrollUntil else { return }
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.88)) {
+                        proxy.scrollTo(index, anchor: UnitPoint(x: 0.5, y: 0.32))
                     }
                 }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 120) // lets the first and last lines reach the centre
-            }
-            .scrollIndicators(.hidden)
-            .mask(LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.08),
-                                         .init(color: .black, location: 0.9), .init(color: .clear, location: 1)],
-                                 startPoint: .top, endPoint: .bottom))
-            .onChange(of: coordinator.currentLineIndex, initial: true) { _, index in
-                guard let index else { return }
-                withAnimation(.smooth(duration: 0.5)) { proxy.scrollTo(index, anchor: .center) }
             }
         }
     }
 
-    private func lineView(index: Int, text: String) -> some View {
-        let current = coordinator.currentLineIndex
-        let distance = current.map { abs($0 - index) } ?? 2
-        let isCurrent = distance == 0 && current != nil
+    /// The line playing at `date`: exact from the line start times while playing, else the
+    /// coordinator's last tick (paused, unsynced, or a source without timing).
+    private func currentLine(at date: Date) -> Int? {
+        let dates = coordinator.lineDates
+        guard !dates.isEmpty else { return coordinator.currentLineIndex }
+        return dates.lastIndex { $0 <= date }
+    }
+
+    private func lineView(index: Int, text: String, current: Int?) -> some View {
+        let isCurrent = index == current
+        let isPast = current.map { index < $0 } ?? false
         return Text(text.isEmpty ? "♪" : text)
             .font(.system(size: 30, weight: .bold))
-            .foregroundStyle(.white.opacity(isCurrent ? 1 : 0.32))
-            .blur(radius: isCurrent || !lyrics.isSynced ? 0 : min(Double(distance), 4) * 0.5)
-            .scaleEffect(isCurrent ? 1 : 0.97, anchor: .leading)
+            .foregroundStyle(.white.opacity(isCurrent ? 1 : (isPast ? 0.22 : 0.38)))
+            .scaleEffect(isCurrent ? 1 : 0.96, anchor: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(.rect)
             .onTapGesture { coordinator.seek(toLine: index) }
-            .animation(.smooth(duration: 0.4), value: current)
             .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 }
@@ -161,26 +180,27 @@ func syncLabel(_ ms: Int) -> String {
     ms == 0 ? "0 s" : String(format: "%@%.1f s", ms > 0 ? "+" : "−", Double(abs(ms)) / 1000)
 }
 
-/// The song's artwork, heavily blurred and darkened, Apple Music lyrics style; the icon's night
-/// purple when there's no artwork.
+/// The song's artwork, blurred and darkened, Apple Music lyrics style; the icon's night purple
+/// when there's no artwork. The blur is baked into `artworkBackdrop` once per song, instead of a
+/// live full-screen blur re-rendered with the view.
 private struct ArtworkBackground: View {
-    let artwork: UIImage?
+    @EnvironmentObject var coordinator: NowPlayingCoordinator
 
     var body: some View {
         ZStack {
             LinearGradient(colors: [Color(red: 0.35, green: 0.16, blue: 0.53), Color(red: 0.04, green: 0.06, blue: 0.19)],
                            startPoint: .top, endPoint: .bottom)
-            if let artwork {
-                Image(uiImage: artwork)
-                    .resizable()
-                    .scaledToFill()
-                    .blur(radius: 70)
-                    .saturation(1.3)
+            if let backdrop = coordinator.artworkBackdrop {
+                // In an overlay on a size-neutral Color.clear: a square image filled to the screen's
+                // height is wider than the screen, and as a ZStack child it widened the whole page.
+                Color.clear
+                    .overlay { Image(uiImage: backdrop).resizable().interpolation(.high).scaledToFill() }
+                    .clipped()
                     .transition(.opacity)
             }
             Color.black.opacity(0.35)
         }
         .ignoresSafeArea()
-        .animation(.easeInOut(duration: 0.8), value: artwork)
+        .animation(.easeInOut(duration: 0.8), value: coordinator.artworkBackdrop)
     }
 }

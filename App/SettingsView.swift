@@ -21,16 +21,20 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    LabeledContent("Offset", value: syncLabel(coordinator.userOffsetMs))
-                    Slider(value: Binding(get: { Double(coordinator.userOffsetMs) },
-                                          set: { coordinator.setOffsetForCurrentSong(Int($0)) }),
+                    LabeledContent("Default", value: syncLabel(coordinator.defaultOffsetMs))
+                    Slider(value: Binding(get: { Double(coordinator.defaultOffsetMs) },
+                                          set: { coordinator.setDefaultOffset(Int($0)) }),
                            in: -3000...3000, step: 100) {
-                        Text("Sync offset")
+                        Text("Default sync")
                     } minimumValueLabel: { Text("Later").font(.caption) } maximumValueLabel: { Text("Earlier").font(.caption) }
+                    if coordinator.currentSongHasOwnOffset, let title = coordinator.track?.title {
+                        LabeledContent(title, value: syncLabel(coordinator.userOffsetMs))
+                        Button("Use Default for This Song") { coordinator.resetCurrentSongOffset() }
+                    }
                 } header: {
                     Text("Sync")
                 } footer: {
-                    Text("Saved for each song; new songs start from your latest setting. Lyric timing is also matched to most uploads of the song automatically.")
+                    Text("The default applies to every song you haven't adjusted. The Sync pill on the lyrics screen changes only the song that's playing, and is remembered for it. Lyric timing is also matched to most uploads of each song automatically.")
                 }
 
                 Section {

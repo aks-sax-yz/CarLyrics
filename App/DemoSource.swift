@@ -1,5 +1,6 @@
 #if targetEnvironment(simulator)
 import Foundation
+import UIKit
 import CarLyricsCore
 
 /// Simulator-only playback source. The iOS Simulator has no Music app, so `systemMusicPlayer`
@@ -22,6 +23,14 @@ final class DemoSource {
         NowPlayingTrack(title: "Shape of You", artist: "Ed Sheeran", durationMs: 233_000, source: .appleMusic),
     ]
     private let start = Date()
+
+    /// Square stand-in artwork, so the simulator shows the lyrics screen as it looks with real
+    /// Apple Music art (the blurred background is where layout bugs hide).
+    static let artwork = UIGraphicsImageRenderer(size: CGSize(width: 600, height: 600)).image { ctx in
+        let colors = [UIColor.systemPink.cgColor, UIColor.systemOrange.cgColor, UIColor.systemIndigo.cgColor] as CFArray
+        let gradient = CGGradient(colorsSpace: nil, colors: colors, locations: [0, 0.5, 1])!
+        ctx.cgContext.drawLinearGradient(gradient, start: .zero, end: CGPoint(x: 600, y: 600), options: [])
+    }
     private static let sliceMs = 100_000
 
     func sampleNow() -> PlaybackState {

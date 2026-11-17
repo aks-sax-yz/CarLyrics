@@ -59,7 +59,8 @@ public struct LyricsStore: Sendable {
 
     /// Bump when what's cached changes, so stale entries are skipped. v2: the original script
     /// (romanized on load), not v1's baked-in ICU romanization. v3: consensus timing applied.
-    static let version = "v3"
+    /// v4: per-line consensus and translations stripped.
+    static let version = "v4"
 
     public func load(for track: NowPlayingTrack) -> TimedLyrics? {
         load(key: "\(Self.version)|\(track.identityKey)")

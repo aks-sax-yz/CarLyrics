@@ -1,4 +1,5 @@
 import Foundation
+import CoreImage
 import os
 import AVFAudio
 import SwiftUI
@@ -84,7 +85,14 @@ final class NowPlayingCoordinator: ObservableObject {
     /// resumes records a big gap → proves suspension. Stays ~1s if it never suspended.
     @Published private(set) var maxTickGap: Double = 0
     @Published private(set) var keepAliveStatus: BackgroundKeepAlive.Status = .starting
-    @Published private(set) var lastLocationUpdate: Date?
+    /// Not published: it changes every location callback and would redraw the lyrics each second.
+    var lastLocationUpdate: Date? { keepAlive.lastLocationUpdate }
+    /// When each lyric line starts, for the in-app lyrics: a TimelineView switches lines exactly
+    /// on these instead of on the 1s tick. Empty when paused or unsynced (the view then falls back
+    /// to `currentLineIndex`). Published only when it actually changes (anchor/offset/song).
+    @Published private(set) var lineDates: [Date] = []
+    /// Pre-blurred artwork for the lyrics background (blurred once per song, not live per frame).
+    @Published private(set) var artworkBackdrop: UIImage?
     @Published private(set) var isCarPlayConnected = false
     @Published private(set) var activityUpdateAttempts = 0
     @Published private(set) var lastActivityUpdateAttempt: Date?
@@ -105,20 +113,47 @@ final class NowPlayingCoordinator: ObservableObject {
         liveActivity.resetDiagnostics()
         refreshActivityDiagnostics()
     }
-    /// The sync offset in effect: this song's saved one, else the default (the latest adjustment).
+    /// The sync offset in effect: this song's saved one, else the default (Settings › Sync).
     /// LRCLIB timings come from different uploaders, so each song can need its own.
     @Published private(set) var userOffsetMs: Int {
         didSet { engine.userOffsetMs = userOffsetMs }
     }
     private var songOffsets: [String: Int]
 
-    /// The Sync slider: remember it for the current song and as the default for unadjusted songs.
+    /// The default sync for every song without its own (Settings › Sync).
+    @Published private(set) var defaultOffsetMs: Int
+    /// Whether the playing song has its own saved sync (set with the lyrics screen's Sync pill).
+    @Published private(set) var currentSongHasOwnOffset = false
+
+    /// The Sync pill: this song only, remembered for it. The default is untouched (it used to follow
+    /// the latest adjustment, so fixing one odd song moved every other song too).
     func setOffsetForCurrentSong(_ ms: Int) {
         userOffsetMs = ms
-        UserDefaults.standard.set(ms, forKey: Self.offsetKey)
+        refreshLineDates() // the highlight moves now, not on the next tick
         guard let key = track?.identityKey else { return }
         songOffsets[key] = ms
+        currentSongHasOwnOffset = true
         UserDefaults.standard.set(songOffsets, forKey: Self.songOffsetsKey)
+    }
+
+    /// Settings › Sync default: applies now unless the playing song has its own.
+    func setDefaultOffset(_ ms: Int) {
+        defaultOffsetMs = ms
+        UserDefaults.standard.set(ms, forKey: Self.offsetKey)
+        if !currentSongHasOwnOffset {
+            userOffsetMs = ms
+            refreshLineDates()
+        }
+    }
+
+    /// Drop the playing song's own sync and go back to the default.
+    func resetCurrentSongOffset() {
+        guard let key = track?.identityKey else { return }
+        songOffsets[key] = nil
+        currentSongHasOwnOffset = false
+        UserDefaults.standard.set(songOffsets, forKey: Self.songOffsetsKey)
+        userOffsetMs = defaultOffsetMs
+        refreshLineDates()
     }
 
     let appleMusic = AppleMusicSource()
@@ -171,6 +206,7 @@ final class NowPlayingCoordinator: ObservableObject {
     private static let heartbeatInterval: TimeInterval = 30
 
     init() {
+        defaultOffsetMs = UserDefaults.standard.integer(forKey: Self.offsetKey)
         userOffsetMs = UserDefaults.standard.integer(forKey: Self.offsetKey)
         songOffsets = UserDefaults.standard.dictionary(forKey: Self.songOffsetsKey) as? [String: Int] ?? [:]
         lyricsBackground = UserDefaults.standard.string(forKey: Self.backgroundKey)
@@ -246,7 +282,10 @@ final class NowPlayingCoordinator: ObservableObject {
     func seek(toLine index: Int) {
         guard canSeek, let lyrics, lyrics.lines.indices.contains(index) else { return }
         // A line shows when position + user offset + file offset reaches its time (see SyncEngine).
-        appleMusic.seek(toMs: lyrics.lines[index].timeMs - lyrics.offsetMs - userOffsetMs)
+        let positionMs = lyrics.lines[index].timeMs - lyrics.offsetMs - userOffsetMs
+        appleMusic.seek(toMs: positionMs)
+        songStartAnchor = Date().addingTimeInterval(-Double(max(0, positionMs)) / 1000) // highlight jumps now
+        refreshLineDates()
         EventLog.log("seek to line \(index + 1) by tap")
     }
 
@@ -282,8 +321,10 @@ final class NowPlayingCoordinator: ObservableObject {
         lastPlayback = nil
         track = nil
         artwork = nil
+        artworkBackdrop = nil
         lyrics = nil
         currentLineIndex = nil
+        lineDates = []
         status = "Stopped"
         refreshActivityDiagnostics()
     }
@@ -340,9 +381,10 @@ final class NowPlayingCoordinator: ObservableObject {
         }
         lastTickWallClock = now
         let keepAliveNow = keepAlive.status
-        if keepAliveNow != keepAliveStatus { EventLog.log("keep-alive \(keepAliveNow)") }
-        keepAliveStatus = keepAliveNow
-        lastLocationUpdate = keepAlive.lastLocationUpdate
+        if keepAliveNow != keepAliveStatus {
+            EventLog.log("keep-alive \(keepAliveNow)")
+            keepAliveStatus = keepAliveNow
+        }
         refreshActivityDiagnostics()
         heartbeatIfDue(now)
 
@@ -355,9 +397,14 @@ final class NowPlayingCoordinator: ObservableObject {
 
         if playback.track.isDifferentSong(from: track) {
             track = playback.track
-            userOffsetMs = songOffsets[playback.track.identityKey] ?? UserDefaults.standard.integer(forKey: Self.offsetKey)
+            currentSongHasOwnOffset = songOffsets[playback.track.identityKey] != nil
+            userOffsetMs = songOffsets[playback.track.identityKey] ?? defaultOffsetMs
             albumColor = playback.track.source == .appleMusic ? appleMusic.artworkColor() : nil
             artwork = playback.track.source == .appleMusic ? appleMusic.artworkImage() : nil
+            artworkBackdrop = Self.backdrop(from: artwork)
+            #if targetEnvironment(simulator)
+            if sourceMode == .demo { artwork = DemoSource.artwork; artworkBackdrop = Self.backdrop(from: artwork) }
+            #endif
             EventLog.log("song \"\(playback.track.title)\" — \(playback.track.artist) [\(playback.track.source.rawValue)]")
             loadLyrics(for: playback.track) // non-blocking: fetch runs async, loop keeps ticking
         } else if let retryAt = lyricsRetryAt, now >= retryAt {
@@ -500,14 +547,15 @@ final class NowPlayingCoordinator: ObservableObject {
             // No synced lyrics yet (still fetching) or none exist. Keep the ONE activity alive and
             // just retitle it to this song — don't end it. Ending + re-requesting can't restart a
             // Live Activity from the background, which is what made song changes drop the widget.
-            currentLineIndex = nil
+            if currentLineIndex != nil { currentLineIndex = nil }
             let state = activityState(playback, positionMs: positionMs, current: "", next: nil)
+            refreshLineDates()
             await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
             await liveActivity.update(state)
             return
         }
         let idx = engine.currentIndex(in: lyrics, positionMs: positionMs)
-        currentLineIndex = idx
+        if idx != currentLineIndex { currentLineIndex = idx }
 
         let current = idx.map { lyrics.lines[$0].text } ?? ""
         let next: String? = {
@@ -517,6 +565,7 @@ final class NowPlayingCoordinator: ObservableObject {
         }()
 
         var state = activityState(playback, positionMs: positionMs, current: current, next: next)
+        refreshLineDates()
         if let start = state.songStart, lineTransition != .morph { // morph needs a push per line
             // Playing: hand iOS the upcoming lines with start times and let its clock switch them.
             // The state then changes once per window, not once per line (2026-11-14 drive: per-line
@@ -621,8 +670,10 @@ final class NowPlayingCoordinator: ObservableObject {
         spotifyAnchor = nil
         track = nil
         artwork = nil
+        artworkBackdrop = nil
         lyrics = nil
         currentLineIndex = nil
+        lineDates = []
         status = "Nothing playing"
         let idle = idleState
         Task { await liveActivity.update(idle); refreshActivityDiagnostics() }
@@ -665,9 +716,30 @@ final class NowPlayingCoordinator: ObservableObject {
         }
     }
 
+    /// Assign only on change: every @Published write redraws every view observing the coordinator.
     private func refreshActivityDiagnostics() {
-        activityUpdateAttempts = liveActivity.updateAttempts
-        lastActivityUpdateAttempt = liveActivity.lastUpdateAttempt
-        activityHealth = liveActivity.healthSummary
+        if activityUpdateAttempts != liveActivity.updateAttempts { activityUpdateAttempts = liveActivity.updateAttempts }
+        if lastActivityUpdateAttempt != liveActivity.lastUpdateAttempt { lastActivityUpdateAttempt = liveActivity.lastUpdateAttempt }
+        if activityHealth != liveActivity.healthSummary { activityHealth = liveActivity.healthSummary }
+    }
+
+    private func refreshLineDates() {
+        var dates: [Date] = []
+        if let start = songStartAnchor, let lyrics, lyrics.isSynced, lastPlayback?.isPlaying == true {
+            let shiftMs = Double(engine.userOffsetMs + lyrics.offsetMs)
+            dates = lyrics.lines.map { start.addingTimeInterval((Double($0.timeMs) - shiftMs) / 1000) }
+        }
+        if dates != lineDates { lineDates = dates }
+    }
+
+    /// Small, heavily blurred copy of the artwork, made once per song: drawing it is free, unlike a
+    /// live full-screen SwiftUI blur.
+    nonisolated static func backdrop(from image: UIImage?) -> UIImage? {
+        guard let image, let input = CIImage(image: image) else { return nil }
+        let small = input.transformed(by: CGAffineTransform(scaleX: 160 / input.extent.width, y: 160 / input.extent.height))
+        let blurred = small.clampedToExtent().applyingGaussianBlur(sigma: 18).cropped(to: small.extent)
+            .applyingFilter("CIColorControls", parameters: [kCIInputSaturationKey: 1.35])
+        guard let cg = CIContext().createCGImage(blurred, from: small.extent) else { return nil }
+        return UIImage(cgImage: cg)
     }
 }
