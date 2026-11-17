@@ -35,6 +35,10 @@ targets:
       path: Generated/CarLyrics-Info.plist
       properties:
         CFBundleDisplayName: Car Lyrics
+        # From the build settings, so the release workflow's build number (CURRENT_PROJECT_VERSION =
+        # run number) reaches the app: SideStore checks it against apps.json's buildVersion.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSAppleMusicUsageDescription: Car Lyrics reads what's playing in the Music app to show synced lyrics.
         NSMicrophoneUsageDescription: Used only if you enable Shazam-style recognition for other apps.
         # Location isn't used for maps — a continuous low-accuracy fix is the one background grant
@@ -69,6 +73,8 @@ targets:
       path: Generated/LyricsWidget-Info.plist
       properties:
         CFBundleDisplayName: Lyrics
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
         NSExtension:
