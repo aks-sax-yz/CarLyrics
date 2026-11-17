@@ -25,7 +25,9 @@ struct ContentView: View {
                 }
             }
             .toolbarBackground(.hidden, for: .navigationBar)
-            .safeAreaInset(edge: .bottom) {
+            // An overlay, not a safeAreaInset: the lyrics scroll under an inset, and the line beneath
+            // the pill took its taps (as tap-to-seek) instead of the buttons.
+            .overlay(alignment: .bottom) {
                 if coordinator.lyrics?.isSynced == true { SyncPill().padding(.bottom, 8) }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
@@ -161,14 +163,16 @@ private struct SyncPill: View {
             nudge(100, "plus", "Show lyrics earlier")
         }
         .padding(6)
-        .glassEffect(.regular, in: .capsule)
+        .glassEffect(.regular.interactive(), in: .capsule)
     }
 
     private func nudge(_ delta: Int, _ symbol: String, _ label: String) -> some View {
         Button {
             coordinator.setOffsetForCurrentSong(min(3000, max(-3000, coordinator.userOffsetMs + delta)))
         } label: {
-            Image(systemName: symbol).font(.body.weight(.semibold)).frame(width: 44, height: 36)
+            Image(systemName: symbol).font(.body.weight(.semibold))
+                .frame(width: 44, height: 36)
+                .contentShape(.rect) // the whole 44pt button, not just the 14pt glyph
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
