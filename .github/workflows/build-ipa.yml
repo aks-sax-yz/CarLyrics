@@ -94,8 +94,15 @@ jobs:
           rm -rf "$WORK"
           mkdir -p "$WORK/Payload"
           cp -R "$APP" "$WORK/Payload/"
-          # ditto preserves resource forks / Finder info better than zip for .app bundles
-          ditto -c -k --sequesterRsrc --keepParent "$WORK/Payload" "$GITHUB_WORKSPACE/CarLyrics.ipa"
+          # Plain Info-ZIP, not ditto: ditto writes each file's sizes in a trailing data descriptor,
+          # and SideStore rejected that IPA ("Archive appears to be corrupt", SideSign.Archive.Error 1,
+          # v1.0-7). zip puts sizes in the local headers, like the local IPA SideStore installed.
+          xattr -cr "$WORK/Payload"
+          (cd "$WORK" && zip -qry "$GITHUB_WORKSPACE/CarLyrics.ipa" Payload)
+          # Fail the build if any entry still has a data descriptor (zipinfo flag l or X).
+          if zipinfo "$GITHUB_WORKSPACE/CarLyrics.ipa" | awk 'NR>2 && NF>8 {print substr($5,2,1)}' | grep -qE '[lX]'; then
+            echo "IPA has data descriptors; SideStore can't read it" >&2; exit 1
+          fi
           ls -lh "$GITHUB_WORKSPACE/CarLyrics.ipa"
           # Sanity-check the zip layout SideStore expects
           unzip -l "$GITHUB_WORKSPACE/CarLyrics.ipa"
