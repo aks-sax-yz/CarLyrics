@@ -10,6 +10,7 @@
       "name": "Car Lyrics",
       "bundleIdentifier": "com.akshatsaxena01.carlyrics",
       "developerName": "Akshat Saxena",
+      "iconURL": "https://raw.githubusercontent.com/aks-sax-yz/CarLyrics/main/App/Assets.xcassets/AppIcon.appiconset/AppIcon.png",
       "subtitle": "Time-synced lyrics on CarPlay and the lock screen.",
       "localizedDescription": "Detects the song playing on your iPhone (Apple Music or Spotify) and shows time-synced lyrics on the CarPlay widgets screen and the lock screen via a Live Activity. No CarPlay entitlement is required.",
       "tintColor": "#1DB954",
