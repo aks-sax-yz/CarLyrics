@@ -31,6 +31,13 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.akshatsaxena01.carlyrics
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
+    # The App Group carries the song to the CarPlay lyrics widget (WidgetFeed). SideStore renames it
+    # per install; AppGroup in WidgetFeed.swift finds the granted one.
+    entitlements:
+      path: Generated/CarLyrics.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.akshatsaxena01.carlyrics
     info:
       path: Generated/CarLyrics-Info.plist
       properties:
@@ -69,6 +76,11 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.akshatsaxena01.carlyrics.widget
+    entitlements:
+      path: Generated/LyricsWidget.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.akshatsaxena01.carlyrics
     info:
       path: Generated/LyricsWidget-Info.plist
       properties:

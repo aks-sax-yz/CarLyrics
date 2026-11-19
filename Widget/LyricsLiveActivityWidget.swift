@@ -24,7 +24,8 @@ struct LyricsLiveActivityWidget: Widget {
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
                             .minimumScaleFactor(0.6)
-                        NextLine(state: context.state)
+                        NextLine(lines: context.state.lines ?? [], fallback: context.state.nextLine,
+                                 style: context.state.transition ?? .instant)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
@@ -69,14 +70,16 @@ struct LyricsSmallView: View {
             SongTitle(state: state)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            // Long lines wrap to 2 lines and shrink to fit rather than end in "…"; the lyric
-            // wins the height over the title row.
-            ClockedText(lines: state.lines ?? [], fallback: state.currentLine, style: state.transition ?? .instant)
-                .font(.title3.weight(.bold))
-                .lineLimit(2)
-                .minimumScaleFactor(0.5)
-                .layoutPriority(1)
-            Spacer(minLength: 0)
+            // The lyric takes the room between the title and the clock, always at 20pt: a line
+            // longer than fits there is cut into parts shown in turn (LyricFit), never shrunk.
+            GeometryReader { geo in
+                let style = state.transition ?? .instant
+                let rows = style == .karaoke ? 1 : LyricFit.rows(in: geo.size.height, font: LyricFit.font(20))
+                ClockedText(lines: LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(20), rows: rows),
+                            fallback: state.currentLine, style: style)
+                    .font(.lyric(20))
+                    .lineLimit(rows)
+            }
             // The song clock along the bottom (bar + "1:23 / 3:54"), so it doesn't take the title's room.
             HStack(spacing: 6) {
                 SongProgress(state: state)
@@ -105,16 +108,22 @@ struct LyricsLockScreenView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            ClockedText(lines: state.lines ?? [], fallback: state.currentLine, style: state.transition ?? .instant)
-                .font(.title3.weight(.bold))
-                .lineLimit(2)
-                .minimumScaleFactor(0.5)
-                .layoutPriority(1)
-            NextLine(state: state)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
+            // Fixed sizes: lines too long for two rows are cut into parts shown in turn (LyricFit).
+            let style = state.transition ?? .instant
+            let rows = style == .karaoke ? 1 : 2
+            GeometryReader { geo in
+                let parts = LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(20), rows: rows)
+                VStack(alignment: .leading, spacing: 8) {
+                    ClockedText(lines: parts, fallback: state.currentLine, style: style)
+                        .font(.lyric(20))
+                        .lineLimit(rows)
+                    NextLine(lines: parts, fallback: state.nextLine, style: style)
+                        .font(.system(size: 17))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            .frame(height: (LyricFit.font(20).lineHeight * CGFloat(rows) + 8 + UIFont.systemFont(ofSize: 17).lineHeight * 2).rounded(.up))
             if state.durationMs != nil {
                 HStack(spacing: 8) {
                     SongProgress(state: state)
@@ -189,7 +198,9 @@ struct ClockedText: View {
     var body: some View {
         if lines.isEmpty {
             // Pushed per line (Morph, paused, Listen): iOS morphs the old text into the new.
+            // Paused / Morph only. ponytail: may still shrink; the clocked path below never does.
             Text(fallback.isEmpty ? placeholder : fallback)
+                .minimumScaleFactor(0.6)
                 .contentTransition(.interpolate)
         } else {
             let sweep = style == .wipe ? 0.4 : 0.1
@@ -209,9 +220,8 @@ struct ClockedText: View {
     @ViewBuilder private func line(_ i: Int) -> some View {
         let text = Text(lines[i].text.isEmpty ? placeholder : lines[i].text)
         if style == .karaoke {
-            // One row, shrunk to fit: a left → right sweep can't follow text onto a second row (it
-            // lit both rows at once), and a per-row sweep would need the wrap point, which the
-            // widget can't know. Long lines are split at 32 chars anyway, so the shrink is mild.
+            // One row: a left → right sweep can't follow text onto a second row (it lit both rows at
+            // once). Callers cut lines to one row's worth (LyricFit, rows: 1) for karaoke.
             let sung = max(i + 1 < lines.count ? lines[i + 1].at.timeIntervalSince(lines[i].at) : 3, 0.2)
             let row = text.lineLimit(1)
             row.opacity(0.4)
@@ -226,15 +236,16 @@ struct ClockedText: View {
 /// The dimmed read-ahead line: during line i it shows line i+1 (nothing after the last). Same
 /// transition as the current line, except karaoke, which only makes sense on the line being sung.
 struct NextLine: View {
-    let state: LyricsActivityAttributes.ContentState
+    let lines: [LyricsActivityAttributes.TimedLine]
+    let fallback: String?
+    let style: LyricsActivityAttributes.Transition
 
     var body: some View {
-        let lines = state.lines ?? []
         if lines.isEmpty {
-            if let next = state.nextLine, !next.isEmpty { Text(next).contentTransition(.interpolate) }
+            if let fallback, !fallback.isEmpty { Text(fallback).contentTransition(.interpolate) }
         } else {
-            ClockedText(lines: lines.indices.map { .init(text: $0 + 1 < lines.count ? lines[$0 + 1].text : "", at: lines[$0].at) },
-                        fallback: "", placeholder: "", style: state.transition == .wipe ? .wipe : .instant)
+            ClockedText(lines: LyricFit.ahead(lines, by: 1), fallback: "", placeholder: "",
+                        style: style == .wipe ? .wipe : .instant)
         }
     }
 }
@@ -285,6 +296,11 @@ struct SongTitle: View {
 extension LyricsActivityAttributes.ContentState {
     /// Text colour for the background: the system's primary on glass, else black or white.
     var ink: Color { background.map { $0.wantsDarkText ? .black : .white } ?? .primary }
+}
+
+extension Font {
+    /// Matches `LyricFit.font`, which measures the lines.
+    static func lyric(_ size: CGFloat) -> Font { .system(size: size, weight: .bold) }
 }
 
 extension LyricsActivityAttributes.RGB {

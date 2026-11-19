@@ -78,29 +78,62 @@ final class ActivityPolicyTests: XCTestCase {
         let lyrics = TimedLyrics(lines: (0..<30).map { LyricsLine(timeMs: 10_000 + $0 * 1_000, text: "L\($0)") },
                                  isSynced: true, offsetMs: 200)
         let start = Date(timeIntervalSince1970: 1_000)
-        // Intro: ♪ from song start, then lines 0–23 at songStart + time − (user + file offset).
+        // Intro: ♪ from song start, then lines 0–11 at songStart + time − (user + file offset).
         let intro = NowPlayingCoordinator.lyricWindow(lyrics, index: nil, songStart: start, userOffsetMs: 800)
-        XCTAssertEqual(intro.count, 25)
+        XCTAssertEqual(intro.count, 13)
         XCTAssertEqual(intro[0], .init(text: "", at: start))
         XCTAssertEqual(intro[1], .init(text: "L0", at: start.addingTimeInterval(9)))
-        // The window moves only every 8 lines, so the pushed state doesn't change per line.
+        // The window moves only every 4 lines, so the pushed state doesn't change per line.
         XCTAssertEqual(NowPlayingCoordinator.lyricWindow(lyrics, index: 8, songStart: start, userOffsetMs: 800),
-                       NowPlayingCoordinator.lyricWindow(lyrics, index: 15, songStart: start, userOffsetMs: 800))
+                       NowPlayingCoordinator.lyricWindow(lyrics, index: 11, songStart: start, userOffsetMs: 800))
+        XCTAssertEqual(NowPlayingCoordinator.lyricWindow(lyrics, index: 8, songStart: start, userOffsetMs: 800).count, 12)
         let end = NowPlayingCoordinator.lyricWindow(lyrics, index: 27, songStart: start, userOffsetMs: 800)
         XCTAssertEqual(end.map(\.text), ["L24", "L25", "L26", "L27", "L28", "L29"])
     }
 
-    func testLongLineIsShownInTwoTimedParts() {
-        let long = "aaaa bbbb cccc dddd eeee ffff gggg hhhh" // 39 chars, middle space at 19
-        let lyrics = TimedLyrics(lines: [LyricsLine(timeMs: 10_000, text: long), LyricsLine(timeMs: 12_000, text: "short")],
-                                 isSynced: true)
+    func testLongLineIsCutIntoPartsThatFitInsteadOfShrinking() {
+        let font = LyricFit.font(20)
+        // Room for exactly two 4-letter words per row (letters differ in width, so the widest pair).
+        let width = ["aaaa bbbb", "cccc dddd", "eeee ffff", "gggg hhhh"]
+            .map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max()! / 0.95 + 1
+        let long = "aaaa bbbb cccc dddd eeee ffff gggg hhhh" // 4 rows at this width
+        XCTAssertEqual(LyricFit.parts(of: long, width: width, font: font, rows: 2),
+                       ["aaaa bbbb cccc dddd", "eeee ffff gggg hhhh"])
+        XCTAssertEqual(LyricFit.parts(of: long, width: width, font: font, rows: 1).count, 4) // karaoke: one row each
+        XCTAssertEqual(LyricFit.parts(of: "aaaa bbbb", width: width, font: font, rows: 2), ["aaaa bbbb"])
+
         let start = Date(timeIntervalSince1970: 1_000)
-        let window = NowPlayingCoordinator.lyricWindow(lyrics, index: 0, songStart: start, userOffsetMs: 0)
-        XCTAssertEqual(window.map(\.text), ["", "aaaa bbbb cccc dddd", "eeee ffff gggg hhhh", "short"])
-        XCTAssertEqual(window[1].at, start.addingTimeInterval(10))
-        // Second part from 19/39 of the way to the next line.
-        XCTAssertEqual(window[2].at.timeIntervalSince(start), 10.974, accuracy: 0.001)
-        XCTAssertEqual(window[3].at, start.addingTimeInterval(12))
+        let lines: [LyricsActivityAttributes.TimedLine] = [.init(text: long, at: start), .init(text: "short", at: start.addingTimeInterval(2))]
+        let split = LyricFit.split(lines, width: width, font: font, rows: 2)
+        XCTAssertEqual(split.map(\.text), ["aaaa bbbb cccc dddd", "eeee ffff gggg hhhh", "short"])
+        // The second part starts 20/39 of the way to the next line.
+        XCTAssertEqual(split[1].at.timeIntervalSince(start), 2 * 20 / 39, accuracy: 0.001)
+        XCTAssertEqual(split[2].at, start.addingTimeInterval(2))
+        // Read-ahead: during part 0 the next row shows part 1.
+        XCTAssertEqual(LyricFit.ahead(split, by: 1).map(\.text), ["eeee ffff gggg hhhh", "short", ""])
+    }
+
+    func testWidgetTimelineHasAnEntryPerLineFromTheCurrentOne() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let feed = WidgetFeed(title: "Song", artist: "Artist",
+                              lines: (0..<5).map { .init(text: "L\($0)", at: start.addingTimeInterval(Double($0))) })
+        let moments = feed.timeline(now: start.addingTimeInterval(2.5), width: 300) // L2 playing
+        XCTAssertEqual(moments.map(\.date), [2.5, 3, 4].map { start.addingTimeInterval($0) })
+        XCTAssertEqual(moments.map(\.current), ["L2", "L3", "L4"])
+        XCTAssertEqual(moments[0].next, ["L3", "L4"])
+        XCTAssertEqual(moments[2].next, [])
+        // A line too long for two rows becomes two entries, so its text keeps the same size.
+        let font = LyricFit.font(WidgetFeed.bigSize)
+        let narrow = ["aaaa bbbb", "cccc dddd", "eeee ffff", "gggg hhhh"]
+            .map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max()! / 0.95 + 1
+        let long = WidgetFeed(title: "Song", artist: "Artist",
+                              lines: [.init(text: "aaaa bbbb cccc dddd eeee ffff gggg hhhh", at: start),
+                                      .init(text: "end", at: start.addingTimeInterval(4))])
+        XCTAssertEqual(long.timeline(now: start, width: narrow).map(\.current),
+                       ["aaaa bbbb cccc dddd", "eeee ffff gggg hhhh", "end"])
+        // Paused: one entry, the line and what's next.
+        let paused = WidgetFeed(title: "Song", artist: "Artist", currentLine: "now", nextLines: ["a", "b", "c"])
+        XCTAssertEqual(paused.timeline(now: start, width: 300), [.init(date: start, current: "now", next: ["a", "b"])])
     }
 
     func testTextTurnsBlackOnLightBackgroundsAndWhiteOnDark() {
