@@ -1,8 +1,10 @@
 import Foundation
 import CoreImage
 import os
+import notify
 import AVFAudio
 import SwiftUI
+import WidgetKit
 import CarLyricsCore
 
 /// The brain: samples the active source, fetches + caches lyrics on song change, runs the
@@ -234,7 +236,7 @@ final class NowPlayingCoordinator: ObservableObject {
         keepAlive.start() // location keep-alive runs in every mode, independent of the mic
         handleCarPlayRouteChange()
         guard loopTask == nil else { return }
-        EventLog.log("app start state=\(Self.appState) build=\(Bundle.main.infoDictionary?["CFBundleVersion"] ?? "?") mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
+        EventLog.log("app start state=\(Self.appState) widgetGroup=\(AppGroup.url != nil) build=\(Bundle.main.infoDictionary?["CFBundleVersion"] ?? "?") mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
         // Observer only once — start() can re-run from SwiftUI onAppear without meaning "restart".
         // Block observer on the main queue: AVAudioSession can post route changes off the main
         // thread, and a selector into this @MainActor class would trip Swift 6's isolation check.
@@ -250,6 +252,17 @@ final class NowPlayingCoordinator: ObservableObject {
                     MainActor.assumeIsolated {
                         EventLog.log("system \(label): thermal=\(ProcessInfo.processInfo.thermalState.rawValue) lowpower=\(ProcessInfo.processInfo.isLowPowerModeEnabled) mem=\(os_proc_available_memory() / 1_048_576)MBfree")
                     }
+                }
+            }
+            // Screen off/on, to test whether freezes start when the display goes fully dark
+            // (Akshat's lead, 2026-11-19). ponytail: SpringBoard's Darwin notification, not public
+            // API; if a future iOS stops posting it, these lines just stop appearing.
+            var screenToken: Int32 = 0
+            notify_register_dispatch("com.apple.springboard.hasBlankedScreen", &screenToken, .main) { token in
+                var blanked: UInt64 = 0
+                notify_get_state(token, &blanked)
+                MainActor.assumeIsolated {
+                    EventLog.log("screen \(blanked == 1 ? "off" : "on") locked=\(!UIApplication.shared.isProtectedDataAvailable)")
                 }
             }
             _ = NotificationCenter.default.addObserver(
@@ -550,6 +563,7 @@ final class NowPlayingCoordinator: ObservableObject {
             if currentLineIndex != nil { currentLineIndex = nil }
             let state = activityState(playback, positionMs: positionMs, current: "", next: nil)
             refreshLineDates()
+            publishWidgetFeed()
             await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
             await liveActivity.update(state)
             return
@@ -578,42 +592,68 @@ final class NowPlayingCoordinator: ObservableObject {
                 state.lines?.removeLast()
             }
         }
+        publishWidgetFeed()
         await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
         await liveActivity.update(state)
     }
 
-    /// The lines the widget switches on its own: from the start of the current block of 8, 24 long,
-    /// so the window moves every 8 lines and a push that lands up to ~16 lines late is still right.
+    // MARK: CarPlay lyrics widget
+
+    private var widgetFeed: WidgetFeed?
+    private var widgetReload: Task<Void, Never>?
+
+    /// Hands the lyrics widget the song (see WidgetFeed). iOS budgets widget reloads, so this
+    /// reloads only when the feed changes, 2s after the last change: a song change, its lyrics
+    /// landing and the anchor settling ~1s in then cost one reload, not three.
+    private func publishWidgetFeed() {
+        let feed = makeWidgetFeed()
+        guard feed != widgetFeed else { return }
+        widgetFeed = feed
+        guard feed.save() else { return }
+        widgetReload?.cancel()
+        widgetReload = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            WidgetCenter.shared.reloadTimelines(ofKind: WidgetFeed.kind)
+            EventLog.log("widget reload \"\(feed.title)\" lines=\(feed.lines.count) playing=\(feed.isPlaying)")
+        }
+    }
+
+    private func makeWidgetFeed() -> WidgetFeed {
+        guard let track else { return .idle }
+        var feed = WidgetFeed(title: track.title, artist: track.artist, background: activityBackground,
+                              isPlaying: lastPlayback?.isPlaying == true)
+        if let lyrics, lyrics.isSynced {
+            if let start = songStartAnchor, !lineDates.isEmpty {
+                feed.lines = [.init(text: "", at: start)] + zip(lyrics.lines, lineDates).map { .init(text: $0.text, at: $1) }
+            } else { // paused
+                feed.currentLine = currentLineIndex.map { lyrics.lines[$0].text } ?? ""
+                feed.nextLines = lyrics.lines.dropFirst((currentLineIndex ?? -1) + 1).prefix(2).map(\.text)
+            }
+        }
+        return feed
+    }
+
+    /// The lines the widget switches on its own: from the start of the current block of 4, 12 long,
+    /// so the window moves every 4 lines and a push that lands up to ~8 lines late is still right.
+    /// Kept small because every line is a stack of timer masks drawn in every presentation: on the
+    /// 2026-11-16 drive a 47-line window (24 + split parts) took the widget extension to 90% CPU for
+    /// 18s (cpu_resource report) and iOS dismissed the activity 20s after it started.
     /// Line i shows at songStart + its time, shifted earlier by the LRC + user offsets (see SyncEngine).
-    /// A leading "" (♪) covers the intro before the first line. A line longer than `splitOver`
-    /// characters (it ended in "…" on CarPlay) is shown as two parts, cut at the space nearest its
-    /// middle; the second part appears partway to the next line, in proportion to where the cut falls.
+    /// A leading "" (♪) covers the intro before the first line. Long lines go whole: the widget cuts
+    /// them to fit its own width (LyricFit), so they never shrink.
     nonisolated static func lyricWindow(_ lyrics: TimedLyrics, index: Int?, songStart: Date, userOffsetMs: Int)
         -> [LyricsActivityAttributes.TimedLine] {
         let lines = lyrics.lines
-        let from = (index ?? 0) / 8 * 8
+        let from = (index ?? 0) / 4 * 4
         let shiftMs = Double(userOffsetMs + lyrics.offsetMs)
         let at = { (ms: Int) in songStart.addingTimeInterval((Double(ms) - shiftMs) / 1000) }
         var window: [LyricsActivityAttributes.TimedLine] = from == 0 ? [.init(text: "", at: songStart)] : []
-        for i in from..<min(from + 24, lines.count) {
-            let text = lines[i].text
-            let half = text.count / 2
-            let spaces = text.enumerated().filter { $0.element == " " }.map(\.offset)
-            if text.count > splitOver, i + 1 < lines.count,
-               let cut = spaces.min(by: { abs($0 - half) < abs($1 - half) }) {
-                let secondMs = lines[i].timeMs + (lines[i + 1].timeMs - lines[i].timeMs) * cut / text.count
-                window.append(.init(text: String(text.prefix(cut)), at: at(lines[i].timeMs)))
-                window.append(.init(text: String(text.dropFirst(cut + 1)), at: at(secondMs)))
-            } else {
-                window.append(.init(text: text, at: at(lines[i].timeMs)))
-            }
+        for i in from..<min(from + 12, lines.count) {
+            window.append(.init(text: lines[i].text, at: at(lines[i].timeMs)))
         }
         return window
     }
-
-    /// Characters that fit on one CarPlay lyric line. ponytail: a character count, not a measured
-    /// width. Lower it if CarPlay still shows "…".
-    nonisolated static let splitOver = 32
 
     /// The pushed state, including the song clock. `songStart` is held steady across ticks so
     /// the widget's live timer never turns into a push per second (see `steadySongStart`).
@@ -675,6 +715,7 @@ final class NowPlayingCoordinator: ObservableObject {
         currentLineIndex = nil
         lineDates = []
         status = "Nothing playing"
+        publishWidgetFeed()
         let idle = idleState
         Task { await liveActivity.update(idle); refreshActivityDiagnostics() }
     }

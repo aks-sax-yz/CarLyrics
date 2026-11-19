@@ -84,6 +84,12 @@ jobs:
           ls -la "$APP"
           echo "Embedded PlugIns (widget extension, if present):"
           ls -la "$APP/PlugIns" || echo "No PlugIns directory"
+          # Ad-hoc sign with the entitlements (xcodegen wrote them to Generated/). Unsigned binaries
+          # carry none, and SideStore registers the App Group the lyrics widget needs only if the
+          # app declares it. SideStore re-signs everything with its own certificate anyway.
+          codesign --force --sign - --entitlements Generated/LyricsWidget.entitlements "$APP/PlugIns/LyricsWidgetExtension.appex"
+          codesign --force --sign - --entitlements Generated/CarLyrics.entitlements "$APP"
+          codesign -d --entitlements - "$APP"
           WORK="$RUNNER_TEMP/ipa"
           rm -rf "$WORK"
           mkdir -p "$WORK/Payload"
