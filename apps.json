@@ -15,7 +15,9 @@
       "tintColor": "#1DB954",
       "category": "entertainment",
       "appPermissions": {
-        "entitlements": [],
+        "entitlements": [
+          "com.apple.security.application-groups"
+        ],
         "privacy": {
           "NSAppleMusicUsageDescription": "Car Lyrics reads what's playing in the Music app to show synced lyrics.",
           "NSMicrophoneUsageDescription": "Used only if you enable Shazam-style recognition for other apps.",
