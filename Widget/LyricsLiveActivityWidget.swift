@@ -60,8 +60,10 @@ struct LyricsActivityView: View {
     }
 }
 
-/// Compact one-glance layout for CarPlay: the current lyric line big, title tiny above it.
-/// Drivers get one readable line, not a paragraph.
+/// CarPlay layout, Apple Music style: the current line big, the next one dimmed below it, the
+/// title tiny above. This is the lyrics surface on CarPlay's widget page: plain widgets there are
+/// still images that iOS redraws a few times an hour (2026-11-20 sysdiagnose: "presentation mode
+/// … static", no redraws within a song), so only the Live Activity can keep time.
 struct LyricsSmallView: View {
     let state: LyricsActivityAttributes.ContentState
 
@@ -70,15 +72,22 @@ struct LyricsSmallView: View {
             SongTitle(state: state)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            // The lyric takes the room between the title and the clock, always at 20pt: a line
-            // longer than fits there is cut into parts shown in turn (LyricFit), never shrunk.
+            // Always 20pt: a line longer than two rows is cut into parts shown in turn (LyricFit),
+            // never shrunk. The next part goes in the room left below.
             GeometryReader { geo in
                 let style = state.transition ?? .instant
-                let rows = style == .karaoke ? 1 : LyricFit.rows(in: geo.size.height, font: LyricFit.font(20))
-                ClockedText(lines: LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(20), rows: rows),
-                            fallback: state.currentLine, style: style)
-                    .font(.lyric(20))
-                    .lineLimit(rows)
+                let rows = style == .karaoke ? 1 : 2
+                let parts = LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(20), rows: rows)
+                VStack(alignment: .leading, spacing: 6) {
+                    ClockedText(lines: parts, fallback: state.currentLine, style: style)
+                        .font(.lyric(20))
+                        .lineLimit(rows)
+                        .frame(height: (LyricFit.font(20).lineHeight * CGFloat(rows)).rounded(.up), alignment: .topLeading)
+                    NextLine(lines: parts, fallback: state.nextLine, style: style)
+                        .font(.lyric(16))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
             }
             // The song clock along the bottom (bar + "1:23 / 3:54"), so it doesn't take the title's room.
             HStack(spacing: 6) {

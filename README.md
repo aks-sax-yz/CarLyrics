@@ -72,13 +72,13 @@ project.yml        xcodegen project definition
 4. Connect to CarPlay — the lyrics appear on the widgets screen. Tune the **Sync** slider in
    the app until lines line up in your car.
 
-**Two ways lyrics reach the CarPlay widgets page.** The **Live Activity** (current line + song
-clock) switches lines with timer masks plus a push every 4 lines. The **Lyrics widget**
-(`Widget/CarLyricsWidget.swift`: the line big, the next two below) gets the whole song once through
-the App Group (`Support/WidgetFeed.swift`), with one timeline entry per line that iOS switches on
-its own schedule: no per-line push and no timer trick. It needs the App Group, so after a fresh
-SideStore install, `app start … widgetGroup=true` should appear in events.log. `widget reload`
-lines show each reload (iOS budgets them; the app reloads once per song change).
+**Only the Live Activity keeps time on CarPlay.** Its CarPlay view (current line big, the next
+one dimmed, song clock) switches lines with timer masks plus a push every 4 lines. The **Lyrics
+widget** (`Widget/CarLyricsWidget.swift`, fed the whole song through the App Group by
+`Support/WidgetFeed.swift`) does not: the 2026-11-20 sysdiagnose shows CarPlay draws plain widgets,
+Apple Music's included, as still images (`presentation mode will change to static`), with no
+redraws within a song, and iOS ran only 5 of the app's 15 reloads in a 28-minute drive
+(`computedBudget: 2.00`). Use the Live Activity there; the widget shows a stale song.
 
 ## Testing on the Simulator
 
