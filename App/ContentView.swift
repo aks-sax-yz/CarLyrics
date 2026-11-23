@@ -43,7 +43,7 @@ struct ContentView: View {
             }
         } else if let lyrics = coordinator.lyrics, !lyrics.isEmpty {
             LyricsList(lyrics: lyrics)
-        } else if coordinator.status.hasPrefix("Fetching") || coordinator.status.hasPrefix("Listening") {
+        } else if coordinator.status.hasPrefix("Fetching") {
             ContentUnavailableView {
                 Label(coordinator.status.replacingOccurrences(of: "…", with: ""), systemImage: "text.quote")
             } description: { ProgressView() }

@@ -207,7 +207,7 @@ struct ClockedText: View {
 
     var body: some View {
         if lines.isEmpty {
-            // Pushed per line (Morph, paused, Listen): iOS morphs the old text into the new.
+            // Pushed per line (Morph, paused): iOS morphs the old text into the new.
             // Paused / Morph only. ponytail: may still shrink; the clocked path below never does.
             Text(fallback.isEmpty ? placeholder : fallback)
                 .minimumScaleFactor(0.6)

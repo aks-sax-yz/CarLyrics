@@ -21,7 +21,6 @@
         ],
         "privacy": {
           "NSAppleMusicUsageDescription": "Car Lyrics reads what's playing in the Music app to show synced lyrics.",
-          "NSMicrophoneUsageDescription": "Used only if you enable Shazam-style recognition for other apps.",
           "NSLocationWhenInUseUsageDescription": "Keeps Car Lyrics running so lyrics keep advancing on CarPlay and the lock screen. Your location isn't recorded or shared.",
           "NSLocationAlwaysAndWhenInUseUsageDescription": "Keeps Car Lyrics running in the background so lyrics keep advancing on CarPlay and the lock screen. Your location isn't recorded or shared."
         }

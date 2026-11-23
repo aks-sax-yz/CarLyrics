@@ -17,7 +17,7 @@ struct SettingsView: View {
                         ForEach(NowPlayingCoordinator.SourceMode.allCases) { Text($0.label).tag($0) }
                     }
                 } footer: {
-                    Text("Auto reads Apple Music, then Spotify, and listens with the microphone only when another app is playing.")
+                    Text("Auto reads Apple Music, then Spotify.")
                 }
 
                 Section {

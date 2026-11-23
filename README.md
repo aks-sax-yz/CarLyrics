@@ -152,5 +152,4 @@ A SideStore install signs the app with your team ID appended, so use
 ## Ideas to build next (Milestone 5)
 
 Word-level karaoke highlight (the parser already keeps word timings), lyric translation /
-transliteration, offline prefetch of a playlist's lyrics, and a ShazamKit mic fallback for
-radio / YouTube Music.
+transliteration, offline prefetch of a playlist's lyrics.

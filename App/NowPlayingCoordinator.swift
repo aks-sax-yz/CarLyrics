@@ -16,7 +16,7 @@ final class NowPlayingCoordinator: ObservableObject {
     /// the background, where no scene (and no `onAppear`) exists to create or start one.
     static let shared = NowPlayingCoordinator()
     enum SourceMode: String, CaseIterable, Identifiable {
-        case auto, appleMusic, spotify, shazam
+        case auto, appleMusic, spotify
         #if targetEnvironment(simulator)
         case demo
         #endif
@@ -26,7 +26,6 @@ final class NowPlayingCoordinator: ObservableObject {
             case .auto: "Auto"
             case .appleMusic: "Apple Music"
             case .spotify: "Spotify"
-            case .shazam: "Listen"
             #if targetEnvironment(simulator)
             case .demo: "Demo"
             #endif
@@ -38,16 +37,6 @@ final class NowPlayingCoordinator: ObservableObject {
         didSet {
             guard oldValue != sourceMode else { return }
             EventLog.log("mode \(sourceMode.rawValue)")
-            // Auto may have implicitly turned on the mic — drop that when leaving Auto.
-            if oldValue == .auto { setAutoListening(false) }
-            // Shazam holds the mic open — only listen while its mode is actually selected.
-            // (The keep-alive is location-based and runs independently, so no handoff needed.)
-            if sourceMode == .shazam {
-                shazamSource.start()
-                status = "Listening…"
-            } else if oldValue == .shazam {
-                shazamSource.stop()
-            }
         }
     }
     /// What the widget draws behind the lyrics.
@@ -164,11 +153,7 @@ final class NowPlayingCoordinator: ObservableObject {
 
     let appleMusic = AppleMusicSource()
     let spotify = SpotifyController()
-    let shazamSource = ShazamSource()
     private let keepAlive = BackgroundKeepAlive()
-    /// In Auto mode, whether we've implicitly fallen back to the mic (an undetectable app
-    /// like YouTube Music is playing). Distinct from the user picking `.shazam` outright.
-    private var autoListening = false
     #if targetEnvironment(simulator)
     private let demoSource = DemoSource()
     #endif
@@ -239,7 +224,7 @@ final class NowPlayingCoordinator: ObservableObject {
 
     func start() {
         appleMusic.start()
-        keepAlive.start() // location keep-alive runs in every mode, independent of the mic
+        keepAlive.start() // location keep-alive runs in every mode
         handleCarPlayRouteChange()
         guard loopTask == nil else { return }
         EventLog.log("app start state=\(Self.appState) widgetGroup=\(AppGroup.url != nil) build=\(Bundle.main.infoDictionary?["CFBundleVersion"] ?? "?") mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
@@ -326,7 +311,7 @@ final class NowPlayingCoordinator: ObservableObject {
         }
     }
 
-    /// `StopLyricsIntent` entry point: end every lyrics activity, stop the loop, the mic and the
+    /// `StopLyricsIntent` entry point: end every lyrics activity, stop the loop and the
     /// location keep-alive, and clear the song, so nothing keeps the app awake. Opening the app
     /// (or the Start intent) brings it all back via `start()`.
     func stopFromIntent() async {
@@ -334,8 +319,6 @@ final class NowPlayingCoordinator: ObservableObject {
         loopTask?.cancel()
         loopTask = nil
         keepAlive.stop()
-        setAutoListening(false)
-        if sourceMode == .shazam { shazamSource.stop() }
         await liveActivity.endAll()
         lastPlayback = nil
         track = nil
@@ -435,19 +418,6 @@ final class NowPlayingCoordinator: ObservableObject {
         await updateSync(positionMs: posNow, playback: playback)
     }
 
-    /// Toggle Auto's implicit mic fallback — start/stop only the mic; the location keep-alive
-    /// runs independently and needs no handoff.
-    private func setAutoListening(_ on: Bool) {
-        guard on != autoListening else { return }
-        autoListening = on
-        if on {
-            shazamSource.start()
-            status = "Listening…"
-        } else {
-            shazamSource.stop()
-        }
-    }
-
     /// Choose the source to read this tick.
     private func resolvePlayback() async -> PlaybackState? {
         switch sourceMode {
@@ -455,25 +425,10 @@ final class NowPlayingCoordinator: ObservableObject {
             return appleMusic.sampleNow()
         case .spotify:
             return await spotifyPlayback()
-        case .shazam:
-            return shazamSource.sampleNow()
         case .auto:
             // Local Apple Music read is cheap; prefer it when actually playing.
-            if let am = appleMusic.sampleNow(), am.isPlaying { setAutoListening(false); return am }
-            if spotify.isLoggedIn, let sp = await spotifyPlayback() { setAutoListening(false); return sp }
-            // No API source. Fall back to the mic when another app (YouTube Music, radio…) is
-            // audibly playing. Hysteresis: once listening, stay until the mic goes cold AND
-            // nothing is audible, so we don't flap between ticks.
-            if autoListening {
-                if let s = shazamSource.sampleNow() { return s }          // recent match → keep syncing
-                if AVAudioSession.sharedInstance().isOtherAudioPlaying { return nil } // audible, no match yet
-                setAutoListening(false)                                   // truly silent → stop
-                return nil
-            }
-            if AVAudioSession.sharedInstance().isOtherAudioPlaying {
-                setAutoListening(true)
-                return shazamSource.sampleNow()
-            }
+            if let am = appleMusic.sampleNow(), am.isPlaying { return am }
+            if spotify.isLoggedIn, let sp = await spotifyPlayback() { return sp }
             return appleMusic.sampleNow()
         #if targetEnvironment(simulator)
         case .demo:
@@ -693,7 +648,7 @@ final class NowPlayingCoordinator: ObservableObject {
     }
 
     /// The widget background for the current setting. Album art falls back to the solid colour for
-    /// sources without artwork here (Spotify, Listen).
+    /// sources without artwork here (Spotify).
     private var activityBackground: LyricsActivityAttributes.RGB? {
         switch lyricsBackground {
         case .solid: solidColor

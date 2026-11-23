@@ -5,7 +5,6 @@ public struct NowPlayingTrack: Equatable, Codable, Sendable {
     public enum Source: String, Codable, Sendable {
         case appleMusic
         case spotify
-        case shazam
     }
 
     public var title: String

@@ -47,18 +47,15 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSAppleMusicUsageDescription: Car Lyrics reads what's playing in the Music app to show synced lyrics.
-        NSMicrophoneUsageDescription: Used only if you enable Shazam-style recognition for other apps.
         # Location isn't used for maps — a continuous low-accuracy fix is the one background grant
         # that survives CarPlay connect/disconnect, keeping the Live Activity loop advancing lines.
         NSLocationWhenInUseUsageDescription: Keeps Car Lyrics running so lyrics keep advancing on CarPlay and the lock screen. Your location isn't recorded or shared.
         NSLocationAlwaysAndWhenInUseUsageDescription: Keeps Car Lyrics running in the background so lyrics keep advancing on CarPlay and the lock screen. Your location isn't recorded or shared.
         NSSupportsLiveActivities: true
         NSSupportsLiveActivitiesFrequentUpdates: true
-        # `location` is the background keep-alive (see BackgroundKeepAlive). `audio` stays for
-        # Listen mode's mic session.
+        # `location` is the background keep-alive (see BackgroundKeepAlive).
         UIBackgroundModes:
           - location
-          - audio
         UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
