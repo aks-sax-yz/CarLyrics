@@ -47,10 +47,11 @@ struct SettingsView: View {
                     Picker("Line Transition", selection: $coordinator.lineTransition) {
                         ForEach(LyricsActivityAttributes.Transition.allCases) { Text($0.label).tag($0) }
                     }
+                    Toggle("Progress Bar on CarPlay", isOn: $coordinator.carPlayProgress)
                 } header: {
                     Text("Live Activity")
                 } footer: {
-                    Text("Album uses the artwork's color in Apple Music and falls back to the color above. Text turns black or white to stay readable. Morph animates each change but can lag on CarPlay.")
+                    Text("Album uses the artwork's color in Apple Music and falls back to the color above. Text turns black or white to stay readable. Morph animates each change but can lag on CarPlay. With the progress bar on, CarPlay lyrics are a little smaller so it fits.")
                 }
 
                 Section {

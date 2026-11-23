@@ -34,6 +34,8 @@ struct LyricsActivityAttributes: ActivityAttributes {
         var background: RGB? = .black
         /// How lines switch; nil (older builds) = instant.
         var transition: Transition? = nil
+        /// CarPlay progress bar (Settings); nil (older builds) = shown.
+        var showsProgress: Bool? = nil
     }
 
     /// Line-switch styles. Slide/Wipe/Karaoke switch on iOS's clock (only timer views animate in a

@@ -74,12 +74,16 @@ project.yml        xcodegen project definition
 
 **Only the Live Activity keeps time on CarPlay.** iOS gives it a fixed 227 × 90 pt box there
 (2026-11-20 sysdiagnose: `family=small … width=Fixed<227.33>, height=Fixed<90.22>`), so the CarPlay
-view is one row of the current line (20pt), one row of the next (16pt, dimmed) and the song + time
-along the bottom; longer lines are cut into one-row parts. Lines change with a 0.3s bottom → top
-sweep (Slide, and Karaoke between lines), so both rows read as rolling up. A plain WidgetKit widget
-was tried (v1.0-7…9) and removed: CarPlay draws widgets as still images (`presentation mode will
-change to static`), loaded it once per drive, and iOS ran only 5 of 15 reloads (`computedBudget:
-2.00`), so it showed a different song.
+view is one row of the current line, one row of the next (dimmed), the progress bar and the song +
+time; longer lines are cut into one-row parts. The bar is a Settings switch ("Progress Bar on
+CarPlay", on by default): with it the lyrics are 18/14pt, without it 20/16pt. Lines change with a
+0.3s bottom → top sweep (Slide, and Karaoke between lines), so both rows read as rolling up.
+
+The **Lyrics widget** (`Widget/CarLyricsWidget.swift`, 18/14pt, fed the whole song through the App
+Group by `Support/WidgetFeed.swift`) is there for anyone who wants it, but it can't keep time on
+CarPlay: CarPlay draws widgets as still images (`presentation mode will change to static`), its
+renderer loaded the widget once per drive, and iOS ran only 5 of 15 reloads (`computedBudget:
+2.00`), so it can show an earlier song. `widget reload` lines in events.log show each request.
 
 ## Testing on the Simulator
 

@@ -31,8 +31,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.akshatsaxena01.carlyrics
         INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
-    # ponytail: unused since the Lyrics widget was removed (2026-11-24: CarPlay showed it as a still
-    # image). Kept so SideStore installs keep the entitlements they were registered with.
+    # The App Group carries the song to the CarPlay lyrics widget (WidgetFeed). SideStore renames it
+    # per install; AppGroup in WidgetFeed.swift finds the granted one.
     entitlements:
       path: Generated/CarLyrics.entitlements
       properties:

@@ -61,29 +61,33 @@ struct LyricsActivityView: View {
 }
 
 /// CarPlay layout, Apple Music style: the current line, the next one smaller and dimmed below it
-/// (lines slide up from one to the other, see ClockedText), and the song along the bottom. iOS gives
-/// it a fixed 227 × 90 pt box on CarPlay (2026-11-20 sysdiagnose), room for one row of each. It's
+/// (lines slide up from one to the other, see ClockedText), then the progress bar and the song + time.
+/// iOS gives it a fixed 227 × 90 pt box on CarPlay (2026-11-20 sysdiagnose), room for one row each. It's
 /// the only lyrics surface that keeps time there: CarPlay draws plain widgets as still images.
 struct LyricsSmallView: View {
     let state: LyricsActivityAttributes.ContentState
 
     var body: some View {
+        // The bar (a Settings switch, on by default) costs a row, so the lyrics drop a size with it.
+        let bar = state.showsProgress ?? true
+        let (big, small): (CGFloat, CGFloat) = bar ? (18, 14) : (20, 16)
         VStack(alignment: .leading, spacing: 4) {
             // One row each at a fixed size: a line wider than the box is cut into parts shown in
             // turn (LyricFit), never shrunk.
             GeometryReader { geo in
                 let style = state.transition ?? .instant
-                let parts = LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(20), rows: 1)
+                let parts = LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(big), rows: 1)
                 VStack(alignment: .leading, spacing: 2) {
                     ClockedText(lines: parts, fallback: state.currentLine, style: style)
-                        .font(.lyric(20))
+                        .font(.lyric(big))
                         .lineLimit(1)
                     NextLine(lines: parts, fallback: state.nextLine, style: style)
-                        .font(.lyric(16))
+                        .font(.lyric(small))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
+            if bar { SongProgress(state: state) }
             HStack(spacing: 6) {
                 SongTitle(state: state)
                 Spacer(minLength: 0)

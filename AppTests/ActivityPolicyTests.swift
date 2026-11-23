@@ -113,6 +113,29 @@ final class ActivityPolicyTests: XCTestCase {
         XCTAssertEqual(LyricFit.ahead(split, by: 1).map(\.text), ["eeee ffff gggg hhhh", "short", ""])
     }
 
+    func testWidgetTimelineHasAnEntryPerLineFromTheCurrentOne() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let feed = WidgetFeed(title: "Song", artist: "Artist",
+                              lines: (0..<5).map { .init(text: "L\($0)", at: start.addingTimeInterval(Double($0))) })
+        let moments = feed.timeline(now: start.addingTimeInterval(2.5), width: 300) // L2 playing
+        XCTAssertEqual(moments.map(\.date), [2.5, 3, 4].map { start.addingTimeInterval($0) })
+        XCTAssertEqual(moments.map(\.current), ["L2", "L3", "L4"])
+        XCTAssertEqual(moments[0].next, ["L3", "L4"])
+        XCTAssertEqual(moments[2].next, [])
+        // A line too long for two rows becomes two entries, so its text keeps the same size.
+        let font = LyricFit.font(WidgetFeed.bigSize)
+        let narrow = ["aaaa bbbb", "cccc dddd", "eeee ffff", "gggg hhhh"]
+            .map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max()! / 0.95 + 1
+        let long = WidgetFeed(title: "Song", artist: "Artist",
+                              lines: [.init(text: "aaaa bbbb cccc dddd eeee ffff gggg hhhh", at: start),
+                                      .init(text: "end", at: start.addingTimeInterval(4))])
+        XCTAssertEqual(long.timeline(now: start, width: narrow).map(\.current),
+                       ["aaaa bbbb cccc dddd", "eeee ffff gggg hhhh", "end"])
+        // Paused: one entry, the line and what's next.
+        let paused = WidgetFeed(title: "Song", artist: "Artist", currentLine: "now", nextLines: ["a", "b", "c"])
+        XCTAssertEqual(paused.timeline(now: start, width: 300), [.init(date: start, current: "now", next: ["a", "b"])])
+    }
+
     func testTextTurnsBlackOnLightBackgroundsAndWhiteOnDark() {
         typealias RGB = LyricsActivityAttributes.RGB
         XCTAssertTrue(RGB(r: 1, g: 1, b: 1).wantsDarkText)

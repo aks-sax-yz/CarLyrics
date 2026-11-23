@@ -4,6 +4,7 @@ import os
 import notify
 import AVFAudio
 import SwiftUI
+import WidgetKit
 import CarLyricsCore
 
 /// The brain: samples the active source, fetches + caches lyrics on song change, runs the
@@ -70,6 +71,10 @@ final class NowPlayingCoordinator: ObservableObject {
     }
     @Published var lineTransition: LyricsActivityAttributes.Transition {
         didSet { UserDefaults.standard.set(lineTransition.rawValue, forKey: Self.transitionKey) }
+    }
+    /// The progress bar in the CarPlay Live Activity; off gives the lyrics their full size.
+    @Published var carPlayProgress: Bool {
+        didSet { UserDefaults.standard.set(carPlayProgress, forKey: Self.carPlayProgressKey) }
     }
     /// Average colour of the current Apple Music artwork; nil for other sources or no art.
     private var albumColor: LyricsActivityAttributes.RGB?
@@ -198,6 +203,7 @@ final class NowPlayingCoordinator: ObservableObject {
     private static let backgroundKey = "lyrics.background"
     private static let solidColorKey = "lyrics.solidColor"
     private static let transitionKey = "lyrics.transition"
+    private static let carPlayProgressKey = "lyrics.carPlayProgress"
     private static let tickGapsKey = "diagnostics.tickGaps"
     private static let carPlayKey = "diagnostics.carPlayConnected"
     private static let spotifyPollInterval: TimeInterval = 3
@@ -216,6 +222,7 @@ final class NowPlayingCoordinator: ObservableObject {
         solidColor = rgb.count == 3 ? .init(r: rgb[0], g: rgb[1], b: rgb[2]) : .black
         lineTransition = UserDefaults.standard.string(forKey: Self.transitionKey)
             .flatMap(LyricsActivityAttributes.Transition.init(rawValue:)) ?? .instant
+        carPlayProgress = UserDefaults.standard.object(forKey: Self.carPlayProgressKey) as? Bool ?? true
         engine.userOffsetMs = userOffsetMs
         if let data = UserDefaults.standard.data(forKey: Self.tickGapsKey),
            let stored = try? JSONDecoder().decode([TickGapEvent].self, from: data) {
@@ -235,7 +242,7 @@ final class NowPlayingCoordinator: ObservableObject {
         keepAlive.start() // location keep-alive runs in every mode, independent of the mic
         handleCarPlayRouteChange()
         guard loopTask == nil else { return }
-        EventLog.log("app start state=\(Self.appState) build=\(Bundle.main.infoDictionary?["CFBundleVersion"] ?? "?") mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
+        EventLog.log("app start state=\(Self.appState) widgetGroup=\(AppGroup.url != nil) build=\(Bundle.main.infoDictionary?["CFBundleVersion"] ?? "?") mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
         // Observer only once — start() can re-run from SwiftUI onAppear without meaning "restart".
         // Block observer on the main queue: AVAudioSession can post route changes off the main
         // thread, and a selector into this @MainActor class would trip Swift 6's isolation check.
@@ -562,6 +569,7 @@ final class NowPlayingCoordinator: ObservableObject {
             if currentLineIndex != nil { currentLineIndex = nil }
             let state = activityState(playback, positionMs: positionMs, current: "", next: nil)
             refreshLineDates()
+            publishWidgetFeed()
             await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
             await liveActivity.update(state)
             return
@@ -590,8 +598,46 @@ final class NowPlayingCoordinator: ObservableObject {
                 state.lines?.removeLast()
             }
         }
+        publishWidgetFeed()
         await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
         await liveActivity.update(state)
+    }
+
+    // MARK: CarPlay lyrics widget
+
+    private var widgetFeed: WidgetFeed?
+    private var widgetReload: Task<Void, Never>?
+
+    /// Hands the lyrics widget the song (see WidgetFeed). iOS budgets widget reloads, so this
+    /// reloads only when the feed changes, 2s after the last change: a song change, its lyrics
+    /// landing and the anchor settling ~1s in then cost one reload, not three.
+    private func publishWidgetFeed() {
+        let feed = makeWidgetFeed()
+        guard feed != widgetFeed else { return }
+        widgetFeed = feed
+        guard feed.save() else { return }
+        widgetReload?.cancel()
+        widgetReload = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            WidgetCenter.shared.reloadTimelines(ofKind: WidgetFeed.kind)
+            EventLog.log("widget reload \"\(feed.title)\" lines=\(feed.lines.count) playing=\(feed.isPlaying)")
+        }
+    }
+
+    private func makeWidgetFeed() -> WidgetFeed {
+        guard let track else { return .idle }
+        var feed = WidgetFeed(title: track.title, artist: track.artist, background: activityBackground,
+                              isPlaying: lastPlayback?.isPlaying == true)
+        if let lyrics, lyrics.isSynced {
+            if let start = songStartAnchor, !lineDates.isEmpty {
+                feed.lines = [.init(text: "", at: start)] + zip(lyrics.lines, lineDates).map { .init(text: $0.text, at: $1) }
+            } else { // paused
+                feed.currentLine = currentLineIndex.map { lyrics.lines[$0].text } ?? ""
+                feed.nextLines = lyrics.lines.dropFirst((currentLineIndex ?? -1) + 1).prefix(2).map(\.text)
+            }
+        }
+        return feed
     }
 
     /// The lines the widget switches on its own: from the start of the current block of 4, 12 long,
@@ -641,7 +687,8 @@ final class NowPlayingCoordinator: ObservableObject {
             songStart: start,
             pausedPositionMs: !playback.isPlaying && duration != nil ? positionMs / 1000 * 1000 : nil,
             background: activityBackground,
-            transition: lineTransition
+            transition: lineTransition,
+            showsProgress: carPlayProgress
         )
     }
 
@@ -675,6 +722,7 @@ final class NowPlayingCoordinator: ObservableObject {
         currentLineIndex = nil
         lineDates = []
         status = "Nothing playing"
+        publishWidgetFeed()
         let idle = idleState
         Task { await liveActivity.update(idle); refreshActivityDiagnostics() }
     }
@@ -687,7 +735,8 @@ final class NowPlayingCoordinator: ObservableObject {
             nextLine: nil,
             isPlaying: false,
             background: activityBackground,
-            transition: lineTransition
+            transition: lineTransition,
+            showsProgress: carPlayProgress
         )
     }
 
