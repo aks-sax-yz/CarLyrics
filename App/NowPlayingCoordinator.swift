@@ -4,7 +4,6 @@ import os
 import notify
 import AVFAudio
 import SwiftUI
-import WidgetKit
 import CarLyricsCore
 
 /// The brain: samples the active source, fetches + caches lyrics on song change, runs the
@@ -236,7 +235,7 @@ final class NowPlayingCoordinator: ObservableObject {
         keepAlive.start() // location keep-alive runs in every mode, independent of the mic
         handleCarPlayRouteChange()
         guard loopTask == nil else { return }
-        EventLog.log("app start state=\(Self.appState) widgetGroup=\(AppGroup.url != nil) build=\(Bundle.main.infoDictionary?["CFBundleVersion"] ?? "?") mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
+        EventLog.log("app start state=\(Self.appState) build=\(Bundle.main.infoDictionary?["CFBundleVersion"] ?? "?") mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
         // Observer only once — start() can re-run from SwiftUI onAppear without meaning "restart".
         // Block observer on the main queue: AVAudioSession can post route changes off the main
         // thread, and a selector into this @MainActor class would trip Swift 6's isolation check.
@@ -563,7 +562,6 @@ final class NowPlayingCoordinator: ObservableObject {
             if currentLineIndex != nil { currentLineIndex = nil }
             let state = activityState(playback, positionMs: positionMs, current: "", next: nil)
             refreshLineDates()
-            publishWidgetFeed()
             await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
             await liveActivity.update(state)
             return
@@ -592,46 +590,8 @@ final class NowPlayingCoordinator: ObservableObject {
                 state.lines?.removeLast()
             }
         }
-        publishWidgetFeed()
         await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
         await liveActivity.update(state)
-    }
-
-    // MARK: CarPlay lyrics widget
-
-    private var widgetFeed: WidgetFeed?
-    private var widgetReload: Task<Void, Never>?
-
-    /// Hands the lyrics widget the song (see WidgetFeed). iOS budgets widget reloads, so this
-    /// reloads only when the feed changes, 2s after the last change: a song change, its lyrics
-    /// landing and the anchor settling ~1s in then cost one reload, not three.
-    private func publishWidgetFeed() {
-        let feed = makeWidgetFeed()
-        guard feed != widgetFeed else { return }
-        widgetFeed = feed
-        guard feed.save() else { return }
-        widgetReload?.cancel()
-        widgetReload = Task {
-            try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled else { return }
-            WidgetCenter.shared.reloadTimelines(ofKind: WidgetFeed.kind)
-            EventLog.log("widget reload \"\(feed.title)\" lines=\(feed.lines.count) playing=\(feed.isPlaying)")
-        }
-    }
-
-    private func makeWidgetFeed() -> WidgetFeed {
-        guard let track else { return .idle }
-        var feed = WidgetFeed(title: track.title, artist: track.artist, background: activityBackground,
-                              isPlaying: lastPlayback?.isPlaying == true)
-        if let lyrics, lyrics.isSynced {
-            if let start = songStartAnchor, !lineDates.isEmpty {
-                feed.lines = [.init(text: "", at: start)] + zip(lyrics.lines, lineDates).map { .init(text: $0.text, at: $1) }
-            } else { // paused
-                feed.currentLine = currentLineIndex.map { lyrics.lines[$0].text } ?? ""
-                feed.nextLines = lyrics.lines.dropFirst((currentLineIndex ?? -1) + 1).prefix(2).map(\.text)
-            }
-        }
-        return feed
     }
 
     /// The lines the widget switches on its own: from the start of the current block of 4, 12 long,
@@ -715,7 +675,6 @@ final class NowPlayingCoordinator: ObservableObject {
         currentLineIndex = nil
         lineDates = []
         status = "Nothing playing"
-        publishWidgetFeed()
         let idle = idleState
         Task { await liveActivity.update(idle); refreshActivityDiagnostics() }
     }

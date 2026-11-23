@@ -72,13 +72,14 @@ project.yml        xcodegen project definition
 4. Connect to CarPlay — the lyrics appear on the widgets screen. Tune the **Sync** slider in
    the app until lines line up in your car.
 
-**Only the Live Activity keeps time on CarPlay.** Its CarPlay view (current line big, the next
-one dimmed, song clock) switches lines with timer masks plus a push every 4 lines. The **Lyrics
-widget** (`Widget/CarLyricsWidget.swift`, fed the whole song through the App Group by
-`Support/WidgetFeed.swift`) does not: the 2026-11-20 sysdiagnose shows CarPlay draws plain widgets,
-Apple Music's included, as still images (`presentation mode will change to static`), with no
-redraws within a song, and iOS ran only 5 of the app's 15 reloads in a 28-minute drive
-(`computedBudget: 2.00`). Use the Live Activity there; the widget shows a stale song.
+**Only the Live Activity keeps time on CarPlay.** iOS gives it a fixed 227 × 90 pt box there
+(2026-11-20 sysdiagnose: `family=small … width=Fixed<227.33>, height=Fixed<90.22>`), so the CarPlay
+view is one row of the current line (20pt), one row of the next (16pt, dimmed) and the song + time
+along the bottom; longer lines are cut into one-row parts. Lines change with a 0.3s bottom → top
+sweep (Slide, and Karaoke between lines), so both rows read as rolling up. A plain WidgetKit widget
+was tried (v1.0-7…9) and removed: CarPlay draws widgets as still images (`presentation mode will
+change to static`), loaded it once per drive, and iOS ran only 5 of 15 reloads (`computedBudget:
+2.00`), so it showed a different song.
 
 ## Testing on the Simulator
 

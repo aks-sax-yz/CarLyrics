@@ -60,39 +60,34 @@ struct LyricsActivityView: View {
     }
 }
 
-/// CarPlay layout, Apple Music style: the current line big, the next one dimmed below it, the
-/// title tiny above. This is the lyrics surface on CarPlay's widget page: plain widgets there are
-/// still images that iOS redraws a few times an hour (2026-11-20 sysdiagnose: "presentation mode
-/// … static", no redraws within a song), so only the Live Activity can keep time.
+/// CarPlay layout, Apple Music style: the current line, the next one smaller and dimmed below it
+/// (lines slide up from one to the other, see ClockedText), and the song along the bottom. iOS gives
+/// it a fixed 227 × 90 pt box on CarPlay (2026-11-20 sysdiagnose), room for one row of each. It's
+/// the only lyrics surface that keeps time there: CarPlay draws plain widgets as still images.
 struct LyricsSmallView: View {
     let state: LyricsActivityAttributes.ContentState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            SongTitle(state: state)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            // Always 20pt: a line longer than two rows is cut into parts shown in turn (LyricFit),
-            // never shrunk. The next part goes in the room left below.
+        VStack(alignment: .leading, spacing: 4) {
+            // One row each at a fixed size: a line wider than the box is cut into parts shown in
+            // turn (LyricFit), never shrunk.
             GeometryReader { geo in
                 let style = state.transition ?? .instant
-                let rows = style == .karaoke ? 1 : 2
-                let parts = LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(20), rows: rows)
-                VStack(alignment: .leading, spacing: 6) {
+                let parts = LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(20), rows: 1)
+                VStack(alignment: .leading, spacing: 2) {
                     ClockedText(lines: parts, fallback: state.currentLine, style: style)
                         .font(.lyric(20))
-                        .lineLimit(rows)
-                        .frame(height: (LyricFit.font(20).lineHeight * CGFloat(rows)).rounded(.up), alignment: .topLeading)
+                        .lineLimit(1)
                     NextLine(lines: parts, fallback: state.nextLine, style: style)
                         .font(.lyric(16))
                         .foregroundStyle(.secondary)
-                        .lineLimit(3)
+                        .lineLimit(1)
                 }
             }
-            // The song clock along the bottom (bar + "1:23 / 3:54"), so it doesn't take the title's room.
             HStack(spacing: 6) {
-                SongProgress(state: state)
-                SongTime(state: state)
+                SongTitle(state: state)
+                Spacer(minLength: 0)
+                SongTime(state: state).layoutPriority(1)
             }
             .font(.caption2)
             .foregroundStyle(.secondary)
@@ -196,7 +191,9 @@ struct SongProgress: View {
 /// iOS stops animating them, lines freeze until the next window push (every 8 lines).
 ///
 /// `style` is built from the same sweep, since nothing else animates in a Live Activity (no fades or
-/// slides): `wipe` reveals the new line left → right over the old one; `karaoke` draws the line dim
+/// moves): lines change by a 0.3s bottom → top sweep, the new line rising in under the old one as
+/// both rows scroll up (Apple Music style; a real move would need a push per line, which CarPlay
+/// throttles). `wipe` reveals the new line left → right instead; `karaoke` also draws the line dim
 /// and lights it left → right over its own duration.
 struct ClockedText: View {
     let lines: [LyricsActivityAttributes.TimedLine]
@@ -212,14 +209,17 @@ struct ClockedText: View {
                 .minimumScaleFactor(0.6)
                 .contentTransition(.interpolate)
         } else {
-            let sweep = style == .wipe ? 0.4 : 0.1
+            let sweep = style == .wipe ? 0.4 : 0.3
+            let upward = style != .wipe
             ZStack(alignment: .leading) {
                 ForEach(lines.indices, id: \.self) { i in
                     line(i)
-                        .mask { Step(at: lines[i].at, duration: sweep) }
+                        .mask { Step(at: lines[i].at, duration: sweep, upward: upward) }
                         .mask {
                             // Hidden wherever the next line has already swept in.
-                            if i + 1 < lines.count { Step(at: lines[i + 1].at, duration: sweep, inverted: true) } else { Color.black }
+                            if i + 1 < lines.count {
+                                Step(at: lines[i + 1].at, duration: sweep, inverted: true, upward: upward)
+                            } else { Color.black }
                         }
                 }
             }
@@ -259,24 +259,30 @@ struct NextLine: View {
     }
 }
 
-/// A mask revealed left → right from `at` over `duration` (`inverted`: hidden left → right instead):
-/// a timer ProgressView stretched over the whole text. Its grey track would leak every other line as
-/// a faint ghost, so it's flattened onto black and contrast-boosted: the white fill stays white
-/// (opaque), the track drops to black (clear).
+/// A mask revealed left → right from `at` over `duration` (`inverted`: hidden left → right instead;
+/// `upward`: bottom → top): a timer ProgressView stretched over the whole text. Its grey track would
+/// leak every other line as a faint ghost, so it's flattened onto black and contrast-boosted: the
+/// white fill stays white (opaque), the track drops to black (clear).
 struct Step: View {
     let at: Date
     var duration: TimeInterval = 0.1
     var inverted = false
+    var upward = false
 
     var body: some View {
         let fill = ZStack {
             Color.black
-            ProgressView(timerInterval: at...at.addingTimeInterval(duration), countsDown: false) {
-                EmptyView()
-            } currentValueLabel: { EmptyView() }
-                .progressViewStyle(.linear)
-                .tint(.white)
-                .scaleEffect(x: 1.1, y: 60)
+            if upward {
+                // The same bar stood on end: its leading (filling) end turned to the bottom.
+                GeometryReader { g in
+                    bar.frame(width: g.size.height)
+                        .scaleEffect(x: 1.1, y: 150)
+                        .rotationEffect(.degrees(-90))
+                        .frame(width: g.size.width, height: g.size.height)
+                }
+            } else {
+                bar.scaleEffect(x: 1.1, y: 60)
+            }
         }
         .compositingGroup()
         .contrast(3)
@@ -284,6 +290,14 @@ struct Step: View {
             if inverted { fill.colorInvert() } else { fill }
         }
         .luminanceToAlpha()
+    }
+
+    private var bar: some View {
+        ProgressView(timerInterval: at...at.addingTimeInterval(duration), countsDown: false) {
+            EmptyView()
+        } currentValueLabel: { EmptyView() }
+            .progressViewStyle(.linear)
+            .tint(.white)
     }
 }
 

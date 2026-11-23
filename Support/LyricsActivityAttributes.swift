@@ -36,8 +36,9 @@ struct LyricsActivityAttributes: ActivityAttributes {
         var transition: Transition? = nil
     }
 
-    /// Line-switch styles. Instant/Wipe/Karaoke switch on iOS's clock (only timer views animate in
-    /// a Live Activity, so they're left → right sweeps). Morph is SwiftUI's text morph, which iOS
+    /// Line-switch styles. Slide/Wipe/Karaoke switch on iOS's clock (only timer views animate in a
+    /// Live Activity, so they're sweeps: Slide and Karaoke change lines bottom → top, Wipe left →
+    /// right). `instant` is Slide's stored name from before it slid. Morph is SwiftUI's text morph, which iOS
     /// only plays on a pushed update, so it pushes per line and lags wherever iOS throttles those
     /// (CarPlay / screen off: 10–30s on the 2026-11-14 drive).
     enum Transition: String, Codable, CaseIterable, Identifiable {
@@ -45,7 +46,7 @@ struct LyricsActivityAttributes: ActivityAttributes {
         var id: String { rawValue }
         var label: String {
             switch self {
-            case .instant: "Instant"
+            case .instant: "Slide"
             case .wipe: "Wipe"
             case .karaoke: "Karaoke"
             case .morph: "Morph"

@@ -5,6 +5,5 @@ import SwiftUI
 struct LyricsWidgetBundle: WidgetBundle {
     var body: some Widget {
         LyricsLiveActivityWidget()
-        CarLyricsWidget()
     }
 }
