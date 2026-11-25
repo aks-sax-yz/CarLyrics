@@ -36,6 +36,9 @@ struct LyricsActivityAttributes: ActivityAttributes {
         var transition: Transition? = nil
         /// CarPlay progress bar (Settings); nil (older builds) = shown.
         var showsProgress: Bool? = nil
+        /// Album background: a small blurred copy of the artwork in the App Group (file name), drawn
+        /// over `background` (its average colour, darkened to match), like Apple Music.
+        var art: String? = nil
     }
 
     /// Line-switch styles. Slide/Wipe/Karaoke switch on iOS's clock (only timer views animate in a

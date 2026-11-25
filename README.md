@@ -14,8 +14,19 @@ widgets page for every vehicle. This app:
 1. **Detects the track** — Apple Music via `MediaPlayer` (`systemMusicPlayer`, on-device);
    Spotify via the official Web API (`/me/player/currently-playing`, OAuth PKCE polling).
    *(No system-wide "now playing" API exists for App Store apps — detection is per-source.)*
-2. **Fetches lyrics** from [LRCLIB](https://lrclib.net) (free, no key, LRC synced lyrics),
-   parses the `[mm:ss.xx]` timestamps, and caches them on disk.
+2. **Fetches lyrics**, the song's own service first, then [LRCLIB](https://lrclib.net)
+   (free, no key, LRC synced lyrics), and caches them on disk:
+   - **Apple Music songs:** Apple's own word-timed lyrics (the TTML music.apple.com's web player
+     shows), via its private `amp-api` service with the web player's developer token and a user
+     token minted from the Apple Music account already on the phone (StoreKit), so there is no
+     sign-in. If Apple refuses that token, Settings › Apple Music offers music.apple.com's own
+     sign-in instead (password + code; passkeys can't work inside apps). Line-timed when Apple
+     has no word timing.
+   - **Spotify songs:** Spotify's own lyrics (Musixmatch's, mostly line-timed), after a separate
+     *Sign In for Spotify Lyrics* on Spotify's web page (it presents as Safari so Google sign-in
+     works). The page's own requests carry the tokens; a small script reports them.
+   - Both are **private and unofficial** (likely against Apple's/Spotify's terms; personal use).
+     Any failure falls back to LRCLIB; a song a service has no lyrics for is remembered.
 3. **Runs the sync engine** every second to find the current line from the playback position.
 4. **Pushes a Live Activity** (`ActivityKit`) whose small presentation renders on CarPlay.
 
@@ -33,6 +44,8 @@ CarLyricsCore/     SwiftPM package — ALL testable logic, runs on macOS (swift 
   LRCParser        parse standard + enhanced (word-level) LRC
   SyncEngine       position → current line (binary search, offset handling)
   LRCLibClient     LRCLIB fetch (get + search fallback)
+  AppleTTML        Apple's lyrics TTML → lines + words (syllables joined, bg vocals dropped)
+  AppleMusicLyrics / SpotifyLyrics   the services' lyrics requests + error mapping
   SpotifyClient    PKCE auth-URL/token/now-playing (pure, network-injected)
   LyricsStore      on-disk lyrics cache
 App/               the iOS app (MusicKit, Spotify auth UI, coordinator, Live Activity push)
@@ -53,6 +66,7 @@ project.yml        xcodegen project definition
    - Create an app at <https://developer.spotify.com/dashboard>
    - Add redirect URI **`carlyrics://spotify-callback`**
    - Put the Client ID in `App/SpotifyController.swift` → `SpotifyConfig.clientID`
+     (this build has Akshat's; dev-mode apps need a Premium owner and list ≤5 users)
    - (Apple Music needs no config.)
 4. **Signing:** select the CarLyrics target → Signing & Capabilities → your Apple ID team.
    A **free** Apple ID works (7-day re-sign) since there's no special entitlement. Add the
@@ -142,14 +156,27 @@ A SideStore install signs the app with your team ID appended, so use
   but ActivityKit can still throttle the visible Live Activity. The CarPlay-connect Shortcuts
   automation above starts the activity via `StartLyricsIntent`; no public API lets the app install
   that automation itself.
-- **Spotify token storage** uses `UserDefaults` (personal build). Move to Keychain before any
-  wider distribution.
+- **Tokens** (Spotify, Apple Music) live in the Keychain, readable after first unlock so a
+  locked phone in the car can use them; never logged.
 - **Lyrics licensing:** LRCLIB is community-contributed and unlicensed — fine for personal
   use, not for a commercial release (that needs a Musixmatch/LyricFind license).
 - **Coverage:** LRCLIB can miss regional tracks. `LyricsKit` (NetEase/QQ providers) is the
   planned fallback — see the plan's Milestone 4.
 
-## Ideas to build next (Milestone 5)
+## Word by word
 
-Word-level karaoke highlight (the parser already keeps word timings), lyric translation /
-transliteration, offline prefetch of a playlist's lyrics.
+With word-timed lyrics (Apple Music), the app's current line brightens word by word with a soft
+edge, and a word held 1s+ (2–7 letters) swells letter by letter and glows, as in Apple Music.
+On CarPlay, with Line Transition set to **Karaoke**, the sweep follows the words: words sung at an
+even pace share one timer bar, so a row needs 1–2 (at most 4); the lock screen keeps one sweep
+from the first word's start to the last word's end, and the Dynamic Island has none. If iOS ends
+the Live Activity within a minute of an update with word timings, the app goes back to line
+sweeps until CarPlay disconnects (`word sweep OFF` in the log).
+
+The **Album** background is the blurred album art on the lock screen and CarPlay too (a 96px copy
+in the App Group, a new file per song). CarPlay ignores `activityBackgroundTint`, so the CarPlay
+view paints its background itself.
+
+## Ideas to build next
+
+Apple's background-vocal lines in the app, lyric translation, offline prefetch of a playlist's lyrics.

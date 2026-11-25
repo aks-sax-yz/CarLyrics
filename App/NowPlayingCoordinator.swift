@@ -411,6 +411,7 @@ final class NowPlayingCoordinator: ObservableObject {
             #if targetEnvironment(simulator)
             if sourceMode == .demo { artwork = DemoSource.artwork; artworkBackdrop = Self.backdrop(from: artwork) }
             #endif
+            saveActivityArt(artworkBackdrop)
             EventLog.log("song \"\(playback.track.title)\" — \(playback.track.artist) [\(playback.track.source.rawValue)]")
             loadLyrics(for: playback.track) // non-blocking: fetch runs async, loop keeps ticking
         } else if let retryAt = lyricsRetryAt, now >= retryAt {
@@ -720,7 +721,8 @@ final class NowPlayingCoordinator: ObservableObject {
             pausedPositionMs: !playback.isPlaying && duration != nil ? positionMs / 1000 * 1000 : nil,
             background: activityBackground,
             transition: lineTransition,
-            showsProgress: carPlayProgress
+            showsProgress: carPlayProgress,
+            art: activityArt
         )
     }
 
@@ -729,9 +731,40 @@ final class NowPlayingCoordinator: ObservableObject {
     private var activityBackground: LyricsActivityAttributes.RGB? {
         switch lyricsBackground {
         case .solid: solidColor
-        case .albumArt: albumColor ?? solidColor
+        case .albumArt:
+            // Under the blurred art (darkened like it, so the text colour suits it), or on its own.
+            if activityArt != nil, let c = albumColor { .init(r: c.r * Self.artDim, g: c.g * Self.artDim, b: c.b * Self.artDim) }
+            else { albumColor ?? solidColor }
         case .glass: nil
         }
+    }
+
+    /// The Album background's blurred art for the Live Activity (a file in the App Group), nil when
+    /// another background is picked or there's no artwork.
+    private var activityArt: String? { lyricsBackground == .albumArt ? artFile : nil }
+    private var artFile: String?
+    nonisolated static let artDim = 0.7
+
+    /// Saves this song's blurred artwork for the Live Activity: 96px, darkened, a few KB. A new name
+    /// per song so the widget never shows the last song's; older files are deleted.
+    private func saveActivityArt(_ backdrop: UIImage?) {
+        artFile = nil
+        guard let dir = AppGroup.url else { return }
+        let fm = FileManager.default
+        for old in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where old.hasPrefix("art-") {
+            try? fm.removeItem(at: dir.appendingPathComponent(old))
+        }
+        guard let backdrop else { return }
+        let size = CGSize(width: 96, height: 96)
+        let image = UIGraphicsImageRenderer(size: size).image { ctx in
+            backdrop.draw(in: CGRect(origin: .zero, size: size))
+            UIColor.black.withAlphaComponent(1 - Self.artDim).setFill()
+            ctx.fill(CGRect(origin: .zero, size: size))
+        }
+        let name = "art-\(UUID().uuidString.prefix(8)).jpg"
+        guard let data = image.jpegData(compressionQuality: 0.7),
+              (try? data.write(to: dir.appendingPathComponent(name))) != nil else { return }
+        artFile = name
     }
 
     /// Keep the previous song-start anchor unless the new estimate moved by more than 0.25s. Each
@@ -768,7 +801,8 @@ final class NowPlayingCoordinator: ObservableObject {
             isPlaying: false,
             background: activityBackground,
             transition: lineTransition,
-            showsProgress: carPlayProgress
+            showsProgress: carPlayProgress,
+            art: activityArt
         )
     }
 

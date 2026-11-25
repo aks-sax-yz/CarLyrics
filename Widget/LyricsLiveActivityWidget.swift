@@ -103,7 +103,23 @@ struct LyricsSmallView: View {
         // CarPlay ignores `activityBackgroundTint` and always draws its glass (Akshat, 2026-11-25:
         // Album showed on the phone, never in the car), so paint Solid/Album here. The ShapeStyle
         // overload fills under any system margins too. Glass (nil) leaves CarPlay's own.
-        .background(state.background?.color ?? Color.clear)
+        .background { ArtBackdrop(state: state) }
+    }
+}
+
+/// Behind the lyrics on CarPlay and the lock screen: the Album background's blurred artwork when the
+/// app saved one, else the picked colour (CarPlay ignores `activityBackgroundTint`, so it's painted
+/// here); nothing on Glass. A still image: no timers, no CPU after the first draw.
+struct ArtBackdrop: View {
+    let state: LyricsActivityAttributes.ContentState
+
+    var body: some View {
+        if let name = state.art, let path = AppGroup.url?.appendingPathComponent(name).path,
+           let image = UIImage(contentsOfFile: path) {
+            Image(uiImage: image).resizable().scaledToFill()
+        } else if let color = state.background?.color {
+            color
+        }
     }
 }
 
@@ -148,6 +164,7 @@ struct LyricsLockScreenView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
+        .background { ArtBackdrop(state: state) }
     }
 }
 
