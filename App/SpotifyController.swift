@@ -3,18 +3,17 @@ import UIKit
 import AuthenticationServices
 import CarLyricsCore
 
-/// Spotify config. Fill in your own Client ID from https://developer.spotify.com/dashboard
-/// (create an app, add redirect URI `carlyrics://spotify-callback`). For personal use your
-/// own client ID avoids the shared-quota problem the commercial apps hit.
+/// Spotify config: Akshat's own dev app (developer.spotify.com/dashboard, redirect URI
+/// `carlyrics://spotify-callback`, Web API). A PKCE client ID isn't a secret. Dev mode needs a
+/// Premium owner and lists at most 5 users (User Management).
 enum SpotifyConfig {
-    static let clientID = "PUT_YOUR_SPOTIFY_CLIENT_ID_HERE"
+    static let clientID = "02a46e46125948ddae76419842bee2a2"
     static let redirectURI = "carlyrics://spotify-callback"
     static var isConfigured: Bool { clientID != "PUT_YOUR_SPOTIFY_CLIENT_ID_HERE" && !clientID.isEmpty }
 }
 
 /// Owns Spotify auth (PKCE via ASWebAuthenticationSession) and token lifecycle, and exposes
-/// a single `poll()` that returns the current `PlaybackState`. Token persistence uses
-/// UserDefaults — fine for a personal sideload; move to Keychain before shipping.
+/// a single `poll()` that returns the current `PlaybackState`. Tokens live in the Keychain.
 @MainActor
 final class SpotifyController: NSObject, ObservableObject {
     @Published private(set) var isLoggedIn = false
@@ -24,7 +23,8 @@ final class SpotifyController: NSObject, ObservableObject {
     private var tokens: SpotifyTokens? { didSet { isLoggedIn = tokens != nil; persist() } }
     private var webSession: ASWebAuthenticationSession?
 
-    private static let defaultsKey = "spotify.tokens"
+    private static let keychainService = "carlyrics.spotify"
+    private static let oldDefaultsKey = "spotify.tokens" // before 2026-11-25
 
     override init() {
         super.init()
@@ -104,18 +104,18 @@ final class SpotifyController: NSObject, ObservableObject {
         }
     }
 
-    // MARK: Persistence (UserDefaults — swap for Keychain before shipping)
+    // MARK: Persistence
 
     private func persist() {
-        guard let tokens, let data = try? JSONEncoder().encode(tokens) else {
-            UserDefaults.standard.removeObject(forKey: Self.defaultsKey); return
-        }
-        UserDefaults.standard.set(data, forKey: Self.defaultsKey)
+        Keychain.set(tokens.flatMap { try? JSONEncoder().encode($0) }, Self.keychainService)
     }
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: Self.defaultsKey),
-              let saved = try? JSONDecoder().decode(SpotifyTokens.self, from: data) else { return }
+        // One-time move from UserDefaults (setting `tokens` persists to the Keychain).
+        let defaults = UserDefaults.standard
+        let data = Keychain.data(Self.keychainService) ?? defaults.data(forKey: Self.oldDefaultsKey)
+        defaults.removeObject(forKey: Self.oldDefaultsKey)
+        guard let data, let saved = try? JSONDecoder().decode(SpotifyTokens.self, from: data) else { return }
         tokens = saved
     }
 }

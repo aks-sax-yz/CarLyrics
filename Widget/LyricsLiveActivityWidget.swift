@@ -99,6 +99,10 @@ struct LyricsSmallView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        // CarPlay ignores `activityBackgroundTint` and always draws its glass (Akshat, 2026-11-25:
+        // Album showed on the phone, never in the car), so paint Solid/Album here. The ShapeStyle
+        // overload fills under any system margins too. Glass (nil) leaves CarPlay's own.
+        .background(state.background?.color ?? Color.clear)
     }
 }
 
