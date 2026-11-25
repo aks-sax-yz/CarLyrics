@@ -42,11 +42,14 @@ struct LyricsActivityAttributes: ActivityAttributes {
         /// The phone away from CarPlay: `lines` starts at the current line and is pushed once per line,
         /// so the lock screen can slide lines up (only timers animate otherwise). nil = clocked window.
         var slide: Bool? = nil
+        /// The safety net tripped (iOS ended the activity right after a heavy update): the widget skips
+        /// the extras (halfway frames, glow) for the rest of the drive. nil = full.
+        var lite: Bool? = nil
     }
 
     /// Line-switch styles. Slide/Wipe/Karaoke switch on iOS's clock (only timer views animate in a
-    /// Live Activity, so they're sweeps: Slide and Karaoke change lines bottom → top, Wipe left →
-    /// right). `instant` is Slide's stored name from before it slid. Morph is SwiftUI's text morph, which iOS
+    /// Live Activity: Slide and Karaoke hop the next line up through a halfway frame (LineHop), and
+    /// slide for real on the phone from per-line pushes; Wipe sweeps left → right). `instant` is Slide's stored name from before it slid. Morph is SwiftUI's text morph, which iOS
     /// only plays on a pushed update, so it pushes per line and lags wherever iOS throttles those
     /// (CarPlay / screen off: 10–30s on the 2026-11-14 drive).
     enum Transition: String, Codable, CaseIterable, Identifiable {

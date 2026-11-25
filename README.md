@@ -177,9 +177,11 @@ Transition set to **Karaoke**, the sweep follows the words: words sung at an eve
 timer bar, so a row needs 1–2 (at most 4); held words glow (a blurred-mask shadow copy, since only
 timers animate there); the Dynamic Island has no sweep.
 
-**Lines slide up on the phone:** away from CarPlay (Slide or Karaoke), the app pushes the lock
+**Lines slide up:** on the phone away from CarPlay (Slide or Karaoke), the app pushes the lock
 screen once per line and it slides the next line up into place, like Apple Music. In the car iOS
-delays those pushes 10–30s, so CarPlay keeps the on-time clocked window and its bottom-to-top sweep. If iOS ends
+delays those pushes 10–30s, so CarPlay stays on iOS's clock and fakes the slide flipbook-style: the
+next line, already small in the lower row, shows for 0.12s halfway up at a middle size, then lands
+big in the top row (`LineHop`: one extra copy and two timers per line). If iOS ends
 the Live Activity within a minute of an update with word timings, the app goes back to line
 sweeps until CarPlay disconnects (`word sweep OFF` in the log).
 

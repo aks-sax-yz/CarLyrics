@@ -78,15 +78,22 @@ struct LyricsSmallView: View {
             GeometryReader { geo in
                 let style = state.transition ?? .instant
                 let parts = LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(big), rows: 1)
+                let lite = state.lite == true
                 VStack(alignment: .leading, spacing: 2) {
                     ClockedText(lines: parts, fallback: state.currentLine, style: style, wordFontSize: big,
-                                glow: !(state.background?.wantsDarkText ?? false))
+                                glow: !lite && !(state.background?.wantsDarkText ?? false))
                         .font(.lyric(big))
                         .lineLimit(1)
                     NextLine(lines: parts, fallback: state.nextLine, style: style)
                         .font(.lyric(small))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+                .overlay(alignment: .topLeading) {
+                    if style != .wipe && !lite && !parts.isEmpty {
+                        LineHop(lines: parts, size: (big + small) / 2)
+                            .offset(y: (LyricFit.font(big).lineHeight + 2) / 2)
+                    }
                 }
             }
             if bar { SongProgress(state: state) }
@@ -266,18 +273,21 @@ struct ClockedText: View {
                 .minimumScaleFactor(0.6)
                 .contentTransition(.interpolate)
         } else {
-            let sweep = style == .wipe ? 0.4 : 0.3
-            let upward = style != .wipe
+            // Wipe sweeps the new line in left → right. Slide and Karaoke cut: the old line goes at the
+            // change, the new one lands `LineHop.time` later, after its halfway frame (LineHop).
+            let wipe = style == .wipe
             ZStack(alignment: .leading) {
                 ForEach(lines.indices, id: \.self) { i in
                     line(i)
                         .mask {
-                            if i == 0 && !revealFirst { Color.black } else { Step(at: lines[i].at, duration: sweep, upward: upward) }
+                            if i == 0 && !revealFirst { Color.black }
+                            else if wipe { Step(at: lines[i].at, duration: 0.4) }
+                            else { Step(at: lines[i].at.addingTimeInterval(LineHop.time), duration: 0.02) }
                         }
                         .mask {
-                            // Hidden wherever the next line has already swept in.
+                            // Hidden once the next line has come in.
                             if i + 1 < lines.count {
-                                Step(at: lines[i + 1].at, duration: sweep, inverted: true, upward: upward)
+                                Step(at: lines[i + 1].at, duration: wipe ? 0.4 : 0.02, inverted: true)
                             } else { Color.black }
                         }
                 }
@@ -357,30 +367,47 @@ struct NextLine: View {
     }
 }
 
-/// A mask revealed left → right from `at` over `duration` (`inverted`: hidden left → right instead;
-/// `upward`: bottom → top): a timer ProgressView stretched over the whole text. Its grey track would
+/// The slide on CarPlay, flipbook style. Only timers animate in a Live Activity, so nothing can move;
+/// but the next line is already drawn small in the lower row and lands big in the top row, so one
+/// copy halfway between them, mid-size, shown for `time` at each change, makes it read as moving
+/// up (lower → middle → top). One copy and two timers per line, not a whole stop-motion.
+struct LineHop: View {
+    let lines: [LyricsActivityAttributes.TimedLine]
+    let size: CGFloat
+    static let time = 0.12
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(lines.indices, id: \.self) { i in
+                Text(lines[i].text)
+                    .font(.lyric(size))
+                    .lineLimit(1)
+                    .opacity(0.75)
+                    .mask { Step(at: lines[i].at, duration: 0.02) }
+                    .mask { Step(at: lines[i].at.addingTimeInterval(Self.time), duration: 0.02, inverted: true) }
+            }
+        }
+    }
+}
+
+/// A mask revealed left → right from `at` over `duration` (`inverted`: hidden left → right instead):
+/// a timer ProgressView stretched over the whole text. Its grey track would
 /// leak every other line as a faint ghost, so it's flattened onto black and contrast-boosted: the
 /// white fill stays white (opaque), the track drops to black (clear).
 struct Step: View {
     let at: Date
     var duration: TimeInterval = 0.1
     var inverted = false
-    var upward = false
 
     var body: some View {
         let fill = ZStack {
             Color.black
-            if upward {
-                // The same bar stood on end: its leading (filling) end turned to the bottom.
-                GeometryReader { g in
-                    bar.frame(width: g.size.height)
-                        .scaleEffect(x: 1.1, y: 150)
-                        .rotationEffect(.degrees(-90))
-                        .frame(width: g.size.width, height: g.size.height)
-                }
-            } else {
-                bar.scaleEffect(x: 1.1, y: 60)
-            }
+            ProgressView(timerInterval: at...at.addingTimeInterval(duration), countsDown: false) {
+                EmptyView()
+            } currentValueLabel: { EmptyView() }
+                .progressViewStyle(.linear)
+                .tint(.white)
+                .scaleEffect(x: 1.1, y: 60)
         }
         .compositingGroup()
         .contrast(3)
@@ -388,14 +415,6 @@ struct Step: View {
             if inverted { fill.colorInvert() } else { fill }
         }
         .luminanceToAlpha()
-    }
-
-    private var bar: some View {
-        ProgressView(timerInterval: at...at.addingTimeInterval(duration), countsDown: false) {
-            EmptyView()
-        } currentValueLabel: { EmptyView() }
-            .progressViewStyle(.linear)
-            .tint(.white)
     }
 }
 

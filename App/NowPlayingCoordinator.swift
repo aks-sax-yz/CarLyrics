@@ -622,6 +622,7 @@ final class NowPlayingCoordinator: ObservableObject {
             state.lines = Self.lyricWindow(lyrics, index: idx, songStart: start, userOffsetMs: engine.userOffsetMs,
                                            words: words, slide: slide)
             state.slide = slide ? true : nil
+            state.lite = wordsOff ? true : nil
             // ActivityKit drops content over 4KB; long romanized lines can get there.
             while (state.lines?.count ?? 0) > 1, ((try? JSONEncoder().encode(state))?.count ?? 0) > 3_500 {
                 state.lines?.removeLast()
@@ -633,9 +634,10 @@ final class NowPlayingCoordinator: ObservableObject {
         await liveActivity.update(state)
     }
 
-    /// Safety net for the word sweep: if iOS ends the Live Activity within a minute of an update
-    /// that carried word timings (likely the CPU limit, as on 2026-11-16), send none for the rest of
-    /// the drive. Cleared when CarPlay disconnects.
+    /// Safety net for the heavy extras: if iOS ends the Live Activity within a minute of an update
+    /// that carried word timings (likely the CPU limit, as on 2026-11-16), send none, and have the
+    /// widget skip the halfway frames and glow (`lite`), for the rest of the drive. Cleared when
+    /// CarPlay disconnects.
     private var lastWordPush: Date?
     private var wordsOff = false
 
