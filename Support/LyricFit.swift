@@ -19,6 +19,18 @@ enum LyricFit {
         for (i, line) in lines.enumerated() {
             let parts = parts(of: line.text, width: width, font: font, rows: rows)
             guard parts.count > 1 else { out.append(line); continue }
+            if let words = line.words {
+                // Word-timed: each part starts with its first word and keeps its words' times.
+                var k = 0
+                for part in parts {
+                    let mine = words[min(k, words.count)..<min(k + part.split(separator: " ").count, words.count)]
+                    k += mine.count
+                    let base = mine.first?.start ?? 0
+                    out.append(.init(text: part, at: line.at.addingTimeInterval(base),
+                                     w: WordSweep.encode(mine.map { .init(chars: $0.chars, start: $0.start - base, end: $0.end - base) })))
+                }
+                continue
+            }
             let end = i + 1 < lines.count ? lines[i + 1].at : line.at.addingTimeInterval(Double(line.text.count) / 12)
             let span = end.timeIntervalSince(line.at)
             var before = 0

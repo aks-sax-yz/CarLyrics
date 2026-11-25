@@ -28,10 +28,16 @@ final class LiveActivityController {
         func update(_ content: ActivityContent<LyricsActivityAttributes.ContentState>) async {
             await activity.update(content)
         }
+        /// Set before our own end, so the state watcher can tell it from iOS ending it.
+        var endedByUs = false
         func end() async {
+            endedByUs = true
             await activity.end(nil, dismissalPolicy: .immediate)
         }
     }
+
+    /// iOS ended or dismissed the activity (not us): the coordinator's word-sweep safety net.
+    var onEndedBySystem: (() -> Void)?
 
     private var box: ActivityBox?
     private var lastState: LyricsActivityAttributes.ContentState?
@@ -224,7 +230,8 @@ final class LiveActivityController {
     private func observe(_ box: ActivityBox) {
         Task {
             for await state in box.activity.activityStateUpdates {
-                EventLog.log("activity \(box.shortID) → \(state)")
+                EventLog.log("activity \(box.shortID) → \(state)\(box.endedByUs ? "" : " (by iOS)")")
+                if (state == .ended || state == .dismissed) && !box.endedByUs { onEndedBySystem?() }
             }
         }
     }

@@ -18,8 +18,9 @@ struct LyricsLiveActivityWidget: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.center) {
                     VStack(spacing: 4) {
+                        // No karaoke here: it's small, and every sweep costs the extension CPU.
                         ClockedText(lines: context.state.lines ?? [], fallback: context.state.currentLine,
-                                    style: context.state.transition ?? .instant)
+                                    style: context.state.transition == .karaoke ? .instant : context.state.transition ?? .instant)
                             .font(.headline)
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
@@ -78,7 +79,7 @@ struct LyricsSmallView: View {
                 let style = state.transition ?? .instant
                 let parts = LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(big), rows: 1)
                 VStack(alignment: .leading, spacing: 2) {
-                    ClockedText(lines: parts, fallback: state.currentLine, style: style)
+                    ClockedText(lines: parts, fallback: state.currentLine, style: style, wordFontSize: big)
                         .font(.lyric(big))
                         .lineLimit(1)
                     NextLine(lines: parts, fallback: state.nextLine, style: style)
@@ -208,6 +209,9 @@ struct ClockedText: View {
     let fallback: String
     var placeholder = "♪ ♪ ♪" // for instrumental gaps
     var style: LyricsActivityAttributes.Transition = .instant
+    /// The lyric font size, given where Karaoke sweeps word by word (CarPlay); nil = one sweep per
+    /// line, from the first word's start to the last word's end when the words are known.
+    var wordFontSize: CGFloat? = nil
 
     var body: some View {
         if lines.isEmpty {
@@ -239,11 +243,21 @@ struct ClockedText: View {
         if style == .karaoke {
             // One row: a left → right sweep can't follow text onto a second row (it lit both rows at
             // once). Callers cut lines to one row's worth (LyricFit, rows: 1) for karaoke.
-            let sung = max(i + 1 < lines.count ? lines[i + 1].at.timeIntervalSince(lines[i].at) : 3, 0.2)
             let row = text.lineLimit(1)
-            row.opacity(0.4)
-                .overlay { row.mask { Step(at: lines[i].at, duration: sung) } }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            let words = lines[i].words
+            if let size = wordFontSize, let words {
+                let pieces = WordSweep.segments(words, text: lines[i].text, font: LyricFit.font(size))
+                row.opacity(0.4)
+                    .overlay { row.mask { WordMask(at: lines[i].at, segments: pieces) } }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                let start = words?.first?.start ?? 0
+                let sung = words.map { $0.last!.end - start }
+                    ?? (i + 1 < lines.count ? lines[i + 1].at.timeIntervalSince(lines[i].at) : 3)
+                row.opacity(0.4)
+                    .overlay { row.mask { Step(at: lines[i].at.addingTimeInterval(start), duration: max(sung, 0.2)) } }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         } else {
             text.frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -306,6 +320,40 @@ struct Step: View {
         } currentValueLabel: { EmptyView() }
             .progressViewStyle(.linear)
             .tint(.white)
+    }
+}
+
+/// Karaoke word by word (CarPlay): one timer bar per WordSweep piece, each laid over its words'
+/// width and clipped to it, all flattened once (not once per piece) like `Step`. A bar fills only its
+/// middle 1/1.1 inside the frame (the 1.1 overscan that hides its rounded ends), so each runs 5% of
+/// its time early and late to cross its words exactly on [t0, t1].
+struct WordMask: View {
+    let at: Date
+    let segments: [WordSweep.Segment]
+
+    var body: some View {
+        GeometryReader { g in
+            ZStack(alignment: .topLeading) {
+                Color.black
+                ForEach(segments.indices, id: \.self) { j in
+                    let s = segments[j]
+                    let d = max(s.t1 - s.t0, 0.05)
+                    let w = max(s.x1 - s.x0, 1)
+                    ProgressView(timerInterval: at.addingTimeInterval(s.t0 - 0.05 * d)...at.addingTimeInterval(s.t1 + 0.05 * d),
+                                 countsDown: false) { EmptyView() } currentValueLabel: { EmptyView() }
+                        .progressViewStyle(.linear)
+                        .tint(.white)
+                        .frame(width: w)
+                        .scaleEffect(x: 1.1, y: 60)
+                        .frame(width: w, height: g.size.height)
+                        .clipped()
+                        .offset(x: s.x0)
+                }
+            }
+            .compositingGroup()
+            .contrast(3)
+            .luminanceToAlpha()
+        }
     }
 }
 

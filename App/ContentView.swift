@@ -100,7 +100,7 @@ private struct LyricsList: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 26) {
                         ForEach(Array(lyrics.lines.enumerated()), id: \.offset) { index, line in
-                            lineView(index: index, text: line.text, current: current)
+                            lineView(index: index, line: line, current: current)
                                 .id(index)
                         }
                     }
@@ -134,11 +134,21 @@ private struct LyricsList: View {
         return dates.lastIndex { $0 <= date }
     }
 
-    private func lineView(index: Int, text: String, current: Int?) -> some View {
+    private func lineView(index: Int, line: LyricsLine, current: Int?) -> some View {
         let isCurrent = index == current
         let isPast = current.map { index < $0 } ?? false
-        return Text(text.isEmpty ? "♪" : text)
-            .font(.system(size: 30, weight: .bold))
+        // Word-timed lyrics: the words as one line, so it doesn't reflow when it starts.
+        let text = line.words.map { $0.map(\.text).joined(separator: " ") } ?? line.text
+        let dates = coordinator.lineDates
+        return Group {
+            if isCurrent, let words = line.words, lyrics.isSynced, index < dates.count {
+                WordLineView(words: words, lineEndMs: line.endMs, lineStart: dates[index],
+                             lineTimeMs: line.timeMs, fontSize: 30)
+            } else {
+                Text(text.isEmpty ? "♪" : text)
+                    .font(.system(size: 30, weight: .bold))
+            }
+        }
             .foregroundStyle(.white.opacity(isCurrent ? 1 : (isPast ? 0.22 : 0.38)))
             .scaleEffect(isCurrent ? 1 : 0.96, anchor: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)

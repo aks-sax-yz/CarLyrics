@@ -59,6 +59,15 @@ struct LyricsActivityAttributes: ActivityAttributes {
     struct TimedLine: Codable, Hashable {
         var text: String
         var at: Date
+        /// Word timings for Karaoke (WordSweep's format); nil = sweep the whole line.
+        var w: String? = nil
+
+        /// The decoded words, if they match the text's words (else the line sweeps whole).
+        var words: [WordSweep.Word]? {
+            guard let w else { return nil }
+            let words = WordSweep.decode(w)
+            return !words.isEmpty && words.count == text.split(separator: " ").count ? words : nil
+        }
     }
 
     struct RGB: Codable, Hashable {

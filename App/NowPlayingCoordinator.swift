@@ -217,6 +217,7 @@ final class NowPlayingCoordinator: ObservableObject {
             maxTickGap = stored.map(\.gap).max() ?? 0
         }
         isCarPlayConnected = Self.currentRouteHasCarPlay
+        liveActivity.onEndedBySystem = { [weak self] in self?.activityEndedBySystem() }
         UserDefaults.standard.set(isCarPlayConnected, forKey: Self.carPlayKey)
         refreshActivityDiagnostics()
         #if targetEnvironment(simulator)
@@ -367,6 +368,7 @@ final class NowPlayingCoordinator: ObservableObject {
             isCarPlayConnected: connected
         )
         if connected != isCarPlayConnected { EventLog.log("carplay \(connected ? "connected" : "disconnected")") }
+        if !connected { wordsOff = false } // the safety net lasts one drive
         isCarPlayConnected = connected
         UserDefaults.standard.set(connected, forKey: Self.carPlayKey)
         if shouldEnd {
@@ -596,7 +598,8 @@ final class NowPlayingCoordinator: ObservableObject {
             // pushes reached the CarPlay widget only every 10–30s).
             state.currentLine = ""
             state.nextLine = nil
-            state.lines = Self.lyricWindow(lyrics, index: idx, songStart: start, userOffsetMs: engine.userOffsetMs)
+            let words = lineTransition == .karaoke && !wordsOff
+            state.lines = Self.lyricWindow(lyrics, index: idx, songStart: start, userOffsetMs: engine.userOffsetMs, words: words)
             // ActivityKit drops content over 4KB; long romanized lines can get there.
             while (state.lines?.count ?? 0) > 1, ((try? JSONEncoder().encode(state))?.count ?? 0) > 3_500 {
                 state.lines?.removeLast()
@@ -604,7 +607,20 @@ final class NowPlayingCoordinator: ObservableObject {
         }
         publishWidgetFeed()
         await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
+        if state.lines?.contains(where: { $0.w != nil }) == true { lastWordPush = Date() }
         await liveActivity.update(state)
+    }
+
+    /// Safety net for the word sweep: if iOS ends the Live Activity within a minute of an update
+    /// that carried word timings (likely the CPU limit, as on 2026-11-16), send none for the rest of
+    /// the drive. Cleared when CarPlay disconnects.
+    private var lastWordPush: Date?
+    private var wordsOff = false
+
+    private func activityEndedBySystem() {
+        guard !wordsOff, let last = lastWordPush, Date().timeIntervalSince(last) < 60 else { return }
+        wordsOff = true
+        EventLog.log("word sweep OFF for this drive: the activity ended \(Int(Date().timeIntervalSince(last)))s after a word push")
     }
 
     // MARK: CarPlay lyrics widget
@@ -652,7 +668,9 @@ final class NowPlayingCoordinator: ObservableObject {
     /// Line i shows at songStart + its time, shifted earlier by the LRC + user offsets (see SyncEngine).
     /// A leading "" (♪) covers the intro before the first line. Long lines go whole: the widget cuts
     /// them to fit its own width (LyricFit), so they never shrink.
-    nonisolated static func lyricWindow(_ lyrics: TimedLyrics, index: Int?, songStart: Date, userOffsetMs: Int)
+    /// `words`: Karaoke's word timings ride along (`TimedLine.w`) for lines that have them.
+    nonisolated static func lyricWindow(_ lyrics: TimedLyrics, index: Int?, songStart: Date, userOffsetMs: Int,
+                                        words: Bool = false)
         -> [LyricsActivityAttributes.TimedLine] {
         let lines = lyrics.lines
         let from = (index ?? 0) / 4 * 4
@@ -660,7 +678,17 @@ final class NowPlayingCoordinator: ObservableObject {
         let at = { (ms: Int) in songStart.addingTimeInterval((Double(ms) - shiftMs) / 1000) }
         var window: [LyricsActivityAttributes.TimedLine] = from == 0 ? [.init(text: "", at: songStart)] : []
         for i in from..<min(from + 12, lines.count) {
-            window.append(.init(text: lines[i].text, at: at(lines[i].timeMs)))
+            if words, let w = lines[i].words, !w.isEmpty {
+                let base = lines[i].timeMs
+                let timed = w.indices.map { k in
+                    let end = w[k].endMs ?? (k + 1 < w.count ? w[k + 1].timeMs : lines[i].endMs ?? w[k].timeMs + 300)
+                    return WordSweep.Word(chars: w[k].text.count, start: Double(w[k].timeMs - base) / 1000,
+                                          end: Double(end - base) / 1000)
+                }
+                window.append(.init(text: w.map(\.text).joined(separator: " "), at: at(base), w: WordSweep.encode(timed)))
+            } else {
+                window.append(.init(text: lines[i].text, at: at(lines[i].timeMs)))
+            }
         }
         return window
     }
