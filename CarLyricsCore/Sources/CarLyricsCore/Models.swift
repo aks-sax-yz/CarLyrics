@@ -12,13 +12,18 @@ public struct NowPlayingTrack: Equatable, Codable, Sendable {
     public var album: String?
     public var durationMs: Int?
     public var source: Source
+    /// The service's own ID: Apple Music's catalog ID (`playbackStoreID`, nil for local files) or
+    /// Spotify's track ID. Asks that service for its lyrics. Not part of `identityKey`.
+    public var catalogID: String? = nil
 
-    public init(title: String, artist: String, album: String? = nil, durationMs: Int? = nil, source: Source) {
+    public init(title: String, artist: String, album: String? = nil, durationMs: Int? = nil, source: Source,
+                catalogID: String? = nil) {
         self.title = title
         self.artist = artist
         self.album = album
         self.durationMs = durationMs
         self.source = source
+        self.catalogID = catalogID
     }
 
     /// Stable identity for cache keys and change detection. Deliberately ignores `source`
@@ -66,20 +71,26 @@ public struct LyricsLine: Equatable, Codable, Sendable {
     public struct Word: Equatable, Codable, Sendable {
         public var timeMs: Int
         public var text: String
-        public init(timeMs: Int, text: String) {
+        /// When the word stops being sung (Apple's word-timed lyrics); nil = at the next word.
+        public var endMs: Int? = nil
+        public init(timeMs: Int, text: String, endMs: Int? = nil) {
             self.timeMs = timeMs
             self.text = text
+            self.endMs = endMs
         }
     }
 
     public var timeMs: Int
     public var text: String
     public var words: [Word]?
+    /// When the line ends (Apple / Spotify); nil = at the next line.
+    public var endMs: Int? = nil
 
-    public init(timeMs: Int, text: String, words: [Word]? = nil) {
+    public init(timeMs: Int, text: String, words: [Word]? = nil, endMs: Int? = nil) {
         self.timeMs = timeMs
         self.text = text
         self.words = words
+        self.endMs = endMs
     }
 }
 
