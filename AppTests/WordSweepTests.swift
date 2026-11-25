@@ -67,6 +67,13 @@ final class WordSweepTests: XCTestCase {
         XCTAssertNil(LyricsActivityAttributes.TimedLine(text: "one two three", at: at, w: "3.0.100 3.100.200").words)
     }
 
+    func testLineTimedLinesSweepAtAnEvenPace() {
+        let words = WordLineView.estimated("ab cd", from: 1000, to: 1500)
+        XCTAssertEqual(words.map(\.text), ["ab", "cd"])
+        XCTAssertEqual(words.map(\.timeMs), [1000, 1300])
+        XCTAssertEqual(words.map(\.endMs), [1200, 1500])
+    }
+
     func testDenseWordWindowFitsActivityLimit() throws {
         let line = { (i: Int) -> LyricsLine in
             let words = (0..<8).map { LyricsLine.Word(timeMs: i * 4000 + $0 * 400, text: "lyrics\($0)", endMs: i * 4000 + $0 * 400 + 350) }

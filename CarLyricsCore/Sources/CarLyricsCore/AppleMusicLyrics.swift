@@ -57,19 +57,63 @@ public enum AppleMusicLyrics {
         }
     }
 
-    /// Word-timed lyrics, else line-timed ones. Throws `Failure`.
-    public static func fetch(songID: String, tokens: Tokens, session: URLSession = .shared) async throws -> TimedLyrics {
-        for syllable in [true, false] {
+    /// Word-timed lyrics, else line-timed ones (unless `wordsOnly`). Throws `Failure`.
+    public static func fetch(songID: String, tokens: Tokens, wordsOnly: Bool = false,
+                             session: URLSession = .shared) async throws -> TimedLyrics {
+        for syllable in wordsOnly ? [true] : [true, false] {
             let (data, response) = try await session.data(for: request(songID: songID, tokens: tokens, syllable: syllable))
             switch outcome(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: data) {
             case .success(var lyrics):
-                lyrics.source = "apple \(syllable ? "syllable" : "line") id=\(songID)"
+                lyrics.source = "apple \(syllable ? "syllable" : "line") id=\(songID) " + (lyrics.source ?? "")
                 return lyrics
             case .failure(.notFound) where syllable: continue
             case .failure(let failure): throw failure
             }
         }
         throw Failure.notFound
+    }
+
+    /// The Apple Music catalog song for a recording's ISRC (a Spotify song's twin) whose length matches
+    /// `durationMs` to the second (Akshat: only when the duration matches), or nil.
+    public static func songID(isrc: String, durationMs: Int?, tokens: Tokens, session: URLSession = .shared) async throws -> String? {
+        var comps = URLComponents(string: "https://amp-api.music.apple.com/v1/catalog/\(tokens.storefront)/songs")!
+        comps.queryItems = [.init(name: "filter[isrc]", value: isrc)]
+        var r = request(songID: "", tokens: tokens, syllable: false)
+        r.url = comps.url
+        let (data, response) = try await session.data(for: r)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        switch status {
+        case 200: return songID(fromISRCResponse: data, durationMs: durationMs)
+        case 401: throw Failure.developerTokenRejected
+        case 403: throw Failure.userTokenRejected
+        case 404: return nil
+        default: throw Failure.http(status)
+        }
+    }
+
+    /// A catalog song's ISRC (to find its twin on Spotify when Apple has no lyrics).
+    public static func isrc(songID: String, tokens: Tokens, session: URLSession = .shared) async throws -> String? {
+        var r = request(songID: "", tokens: tokens, syllable: false)
+        r.url = URL(string: "https://amp-api.music.apple.com/v1/catalog/\(tokens.storefront)/songs/\(songID)")
+        let (data, response) = try await session.data(for: r)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        struct Doc: Decodable { struct S: Decodable { struct A: Decodable { var isrc: String? }; var attributes: A? }; var data: [S] }
+        return (try? JSONDecoder().decode(Doc.self, from: data))?.data.first?.attributes?.isrc
+    }
+
+    /// Two services' files of one recording rarely agree to the millisecond, so "matches" is within
+    /// half a second: the same length to the second, as both apps show it.
+    static let durationTolerance = 500
+
+    static func songID(fromISRCResponse data: Data, durationMs: Int?) -> String? {
+        struct Doc: Decodable {
+            struct S: Decodable { struct A: Decodable { var durationInMillis: Int? }; var id: String; var attributes: A? }
+            var data: [S]
+        }
+        guard let durationMs, let songs = (try? JSONDecoder().decode(Doc.self, from: data))?.data else { return nil }
+        return songs.first { song in
+            song.attributes?.durationInMillis.map { abs($0 - durationMs) <= durationTolerance } ?? false
+        }?.id
     }
 
     /// The signed-in account's storefront (`in`), from `/v1/me/storefront`.

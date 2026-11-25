@@ -489,8 +489,8 @@ final class NowPlayingCoordinator: ObservableObject {
             // The cache keeps the original script; romanize on load so converter fixes apply.
             lyrics = Transliterator.romanized(cached)
             status = cached.isSynced ? "Synced lyrics (cached)" : "Plain lyrics (cached)"
-            // A cached LRCLIB copy is upgraded once, in the background, when the service can do better.
-            guard service(for: track, cached: cached) != nil else { return }
+            // A cached LRCLIB copy is upgraded once, in the background, when a service can do better.
+            guard !services(for: track, cached: cached).isEmpty else { return }
         } else {
             status = "Fetching lyrics…"
             lyrics = nil
@@ -498,48 +498,64 @@ final class NowPlayingCoordinator: ObservableObject {
         Task { [weak self] in await self?.fetchLyrics(for: track, token: token, cached: cached) }
     }
 
-    /// The service whose own lyrics to ask for ("apple" / "spotify"), or nil: not set up, no ID
-    /// (local files), or the cache already holds a service's lyrics or knows this one has none.
-    private func service(for track: NowPlayingTrack, cached: TimedLyrics?) -> String? {
-        guard let id = track.catalogID, !id.isEmpty else { return nil }
-        let name: String
+    /// The services to ask, in order, before LRCLIB:
+    /// - Apple Music songs: Apple's lyrics ("apple"), then Spotify's for the same recording, by ISRC
+    ///   and only at the same length ("spotify-isrc").
+    /// - Spotify songs: Apple's word-timed lyrics of the same recording, by ISRC ("apple-isrc"), then
+    ///   Spotify's own, line-timed ("spotify").
+    /// None when the cache already holds a service's lyrics; a service that had none is skipped.
+    private func services(for track: NowPlayingTrack, cached: TimedLyrics?) -> [String] {
+        var names: [String] = []
         switch track.source {
         case .appleMusic:
-            guard appleAccount.enabled else { return nil }
-            name = "apple"
+            if appleAccount.enabled, track.catalogID?.isEmpty == false {
+                names.append("apple")
+                if spotifyLyrics.isConnected { names.append("spotify-isrc") }
+            }
         case .spotify:
-            guard spotifyLyrics.isConnected else { return nil }
-            name = "spotify"
+            if appleAccount.enabled, track.isrc?.isEmpty == false { names.append("apple-isrc") }
+            if spotifyLyrics.isConnected, track.catalogID?.isEmpty == false { names.append("spotify") }
         }
-        if let source = cached?.source,
-           source.hasPrefix("apple") || source.hasPrefix("spotify") || source.contains(" \(name)=none") { return nil }
-        return name
+        guard let source = cached?.source else { return names }
+        // Build 12 cached Apple's lyrics without the lyricOffset fix (no "leadingSilence=" note): once more.
+        if source.hasPrefix("apple"), !source.contains("leadingSilence=") { return names.filter { $0.hasPrefix("apple") } }
+        if source.hasPrefix("apple") || source.hasPrefix("spotify") { return [] }
+        return names.filter { !source.contains(" \($0)=none") }
     }
 
     private func fetchLyrics(for track: NowPlayingTrack, token: UUID, cached: TimedLyrics?) async {
-        var missed: String? // the service said it has no lyrics: remember, so it isn't asked again
-        if let name = service(for: track, cached: cached), let id = track.catalogID {
+        var missed: [String] = [] // services that said they have none: remembered, so not asked again
+        let marks = { missed.map { " \($0)=none" }.joined() }
+        for name in services(for: track, cached: cached) {
             do {
-                let fetched = name == "apple" ? try await appleAccount.lyrics(songID: id)
-                                              : try await spotifyLyrics.lyrics(trackID: id)
+                var fetched: TimedLyrics
+                switch name {
+                case "apple": fetched = try await appleAccount.lyrics(songID: track.catalogID ?? "")
+                case "apple-isrc": fetched = try await appleAccount.lyrics(isrc: track.isrc ?? "", durationMs: track.durationMs)
+                case "spotify-isrc":
+                    guard let isrc = await appleAccount.isrc(songID: track.catalogID ?? "") else { throw SpotifyLyrics.Failure.notFound }
+                    fetched = try await spotifyLyrics.lyrics(isrc: isrc, durationMs: track.durationMs)
+                default: fetched = try await spotifyLyrics.lyrics(trackID: track.catalogID ?? "")
+                }
                 guard lyricsFetchToken == token else { return }
+                fetched.source = (fetched.source ?? name) + marks()
                 show(fetched, for: track)
                 return
             } catch {
                 let none = (error as? AppleMusicLyrics.Failure) == .notFound || (error as? SpotifyLyrics.Failure) == .notFound
                 EventLog.log("lyrics \"\(track.title)\" \(name) \(none ? "has none" : "failed: \(error)")")
                 guard lyricsFetchToken == token else { return }
-                if none { missed = name }
-                if var cached {
-                    if let missed { cached.source = (cached.source ?? "lrclib") + " \(missed)=none"; store.save(cached, for: track) }
-                    return // keep showing the cached copy
-                }
+                if none { missed.append(name) }
             }
+        }
+        if var cached {
+            if !missed.isEmpty { cached.source = (cached.source ?? "lrclib") + marks(); store.save(cached, for: track) }
+            return // keep showing the cached copy
         }
         do {
             var fetched = try await lrclib.lyrics(for: track)
             guard lyricsFetchToken == token else { return } // superseded by a newer song
-            if let missed { fetched.source = (fetched.source ?? "lrclib") + " \(missed)=none" }
+            fetched.source = (fetched.source ?? "lrclib") + marks()
             show(fetched, for: track)
         } catch let LRCLibClient.LRCLibError.badResponse(code) {
             guard lyricsFetchToken == token else { return }
@@ -600,7 +616,12 @@ final class NowPlayingCoordinator: ObservableObject {
             state.currentLine = ""
             state.nextLine = nil
             let words = lineTransition == .karaoke && !wordsOff
-            state.lines = Self.lyricWindow(lyrics, index: idx, songStart: start, userOffsetMs: engine.userOffsetMs, words: words)
+            // Away from CarPlay the lock screen slides lines up, from a push per line. In the car iOS
+            // delays those pushes 10–30s (2026-11-14 drive), so CarPlay keeps the clocked window.
+            let slide = !isCarPlayConnected && (lineTransition == .instant || lineTransition == .karaoke)
+            state.lines = Self.lyricWindow(lyrics, index: idx, songStart: start, userOffsetMs: engine.userOffsetMs,
+                                           words: words, slide: slide)
+            state.slide = slide ? true : nil
             // ActivityKit drops content over 4KB; long romanized lines can get there.
             while (state.lines?.count ?? 0) > 1, ((try? JSONEncoder().encode(state))?.count ?? 0) > 3_500 {
                 state.lines?.removeLast()
@@ -670,15 +691,18 @@ final class NowPlayingCoordinator: ObservableObject {
     /// A leading "" (♪) covers the intro before the first line. Long lines go whole: the widget cuts
     /// them to fit its own width (LyricFit), so they never shrink.
     /// `words`: Karaoke's word timings ride along (`TimedLine.w`) for lines that have them.
+    /// `slide`: the phone's per-line window instead: the current line and the two after it.
     nonisolated static func lyricWindow(_ lyrics: TimedLyrics, index: Int?, songStart: Date, userOffsetMs: Int,
-                                        words: Bool = false)
+                                        words: Bool = false, slide: Bool = false)
         -> [LyricsActivityAttributes.TimedLine] {
         let lines = lyrics.lines
-        let from = (index ?? 0) / 4 * 4
+        let from = slide ? index ?? 0 : (index ?? 0) / 4 * 4
+        let count = slide ? (index == nil ? 2 : 3) : 12
         let shiftMs = Double(userOffsetMs + lyrics.offsetMs)
         let at = { (ms: Int) in songStart.addingTimeInterval((Double(ms) - shiftMs) / 1000) }
-        var window: [LyricsActivityAttributes.TimedLine] = from == 0 ? [.init(text: "", at: songStart)] : []
-        for i in from..<min(from + 12, lines.count) {
+        let intro = slide ? index == nil : from == 0
+        var window: [LyricsActivityAttributes.TimedLine] = intro ? [.init(text: "", at: songStart)] : []
+        for i in from..<min(from + count, lines.count) {
             if words, let w = lines[i].words, !w.isEmpty {
                 let base = lines[i].timeMs
                 let timed = w.indices.map { k in

@@ -79,7 +79,8 @@ struct LyricsSmallView: View {
                 let style = state.transition ?? .instant
                 let parts = LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(big), rows: 1)
                 VStack(alignment: .leading, spacing: 2) {
-                    ClockedText(lines: parts, fallback: state.currentLine, style: style, wordFontSize: big)
+                    ClockedText(lines: parts, fallback: state.currentLine, style: style, wordFontSize: big,
+                                glow: !(state.background?.wantsDarkText ?? false))
                         .font(.lyric(big))
                         .lineLimit(1)
                     NextLine(lines: parts, fallback: state.nextLine, style: style)
@@ -141,17 +142,40 @@ struct LyricsLockScreenView: View {
             let style = state.transition ?? .instant
             let rows = style == .karaoke ? 1 : 2
             GeometryReader { geo in
-                let parts = LyricFit.split(state.lines ?? [], width: geo.size.width, font: LyricFit.font(20), rows: rows)
-                VStack(alignment: .leading, spacing: 8) {
-                    ClockedText(lines: parts, fallback: state.currentLine, style: style)
-                        .font(.lyric(20))
-                        .lineLimit(rows)
-                    NextLine(lines: parts, fallback: state.nextLine, style: style)
-                        .font(.system(size: 17))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
+                let lines = state.lines ?? []
+                let parts = LyricFit.split(lines, width: geo.size.width, font: LyricFit.font(20), rows: rows)
+                let words: CGFloat? = style == .karaoke ? 20 : nil
+                if state.slide == true, let current = lines.first {
+                    // The phone, away from CarPlay: the app pushes each line and iOS slides the next one
+                    // up into place, like Apple Music's lyrics. Only the current line's parts are clocked.
+                    let mine = lines.count > 1 ? parts.filter { $0.at < lines[1].at } : parts
+                    VStack(alignment: .leading, spacing: 8) {
+                        ClockedText(lines: mine, fallback: "", style: style, wordFontSize: words, revealFirst: false,
+                                    glow: !(state.background?.wantsDarkText ?? false))
+                            .font(.lyric(20))
+                            .lineLimit(rows)
+                        Text(lines.count > 1 ? lines[1].text : "")
+                            .font(.system(size: 17))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    .id(current.at)
+                    .transition(.push(from: .bottom))
+                    .animation(.smooth(duration: 0.45), value: current.at)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ClockedText(lines: parts, fallback: state.currentLine, style: style, wordFontSize: words,
+                                    glow: !(state.background?.wantsDarkText ?? false))
+                            .font(.lyric(20))
+                            .lineLimit(rows)
+                        NextLine(lines: parts, fallback: state.nextLine, style: style)
+                            .font(.system(size: 17))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 }
             }
+            .clipped()
             .frame(height: (LyricFit.font(20).lineHeight * CGFloat(rows) + 8 + UIFont.systemFont(ofSize: 17).lineHeight * 2).rounded(.up))
             if state.durationMs != nil {
                 HStack(spacing: 8) {
@@ -226,9 +250,13 @@ struct ClockedText: View {
     let fallback: String
     var placeholder = "♪ ♪ ♪" // for instrumental gaps
     var style: LyricsActivityAttributes.Transition = .instant
-    /// The lyric font size, given where Karaoke sweeps word by word (CarPlay); nil = one sweep per
-    /// line, from the first word's start to the last word's end when the words are known.
+    /// The lyric font size, given where Karaoke sweeps word by word (CarPlay, lock screen); nil = one
+    /// sweep per line, from the first word's start to the last word's end when the words are known.
     var wordFontSize: CGFloat? = nil
+    /// The first line is already on screen (the phone's per-line slide brought it in): no reveal sweep.
+    var revealFirst = true
+    /// Held words glow (white): off on light backgrounds, where the text is black.
+    var glow = true
 
     var body: some View {
         if lines.isEmpty {
@@ -243,7 +271,9 @@ struct ClockedText: View {
             ZStack(alignment: .leading) {
                 ForEach(lines.indices, id: \.self) { i in
                     line(i)
-                        .mask { Step(at: lines[i].at, duration: sweep, upward: upward) }
+                        .mask {
+                            if i == 0 && !revealFirst { Color.black } else { Step(at: lines[i].at, duration: sweep, upward: upward) }
+                        }
                         .mask {
                             // Hidden wherever the next line has already swept in.
                             if i + 1 < lines.count {
@@ -263,9 +293,38 @@ struct ClockedText: View {
             let row = text.lineLimit(1)
             let words = lines[i].words
             if let size = wordFontSize, let words {
-                let pieces = WordSweep.segments(words, text: lines[i].text, font: LyricFit.font(size))
+                let font = LyricFit.font(size)
+                let pieces = WordSweep.segments(words, text: lines[i].text, font: font)
+                let held = WordSweep.held(words, text: lines[i].text, font: font)
                 row.opacity(0.4)
                     .overlay { row.mask { WordMask(at: lines[i].at, segments: pieces) } }
+                    .overlay {
+                        // Held words glow while sung (Apple Music's swell can't be drawn here: only
+                        // timers animate). The glow follows the sweep in, and wipes off when the word ends.
+                        // Drawn with 2× its radius of room all round, so the mask's edges fall where the
+                        // glow has already faded (a tight mask showed as a box).
+                        if glow {
+                            let g = size * 0.22
+                            ForEach(held.indices, id: \.self) { h in
+                                let w = held[h]
+                                let span = WordSweep.Segment(x0: w.x0, x1: w.x1 + 4 * g, t0: w.t0, t1: w.t1)
+                                row.shadow(color: .white.opacity(0.85), radius: g)
+                                    .padding(2 * g)
+                                    // Timer masks have hard edges; blurred, the glow fades in and out softly.
+                                    .mask { WordMask(at: lines[i].at, segments: [span]).blur(radius: g) }
+                                    .mask {
+                                        HStack(spacing: 0) {
+                                            Color.black.frame(width: w.x0)
+                                            Step(at: lines[i].at.addingTimeInterval(w.t1), duration: 0.35, inverted: true)
+                                                .frame(width: max(span.x1 - span.x0, 1))
+                                            Color.black
+                                        }
+                                        .blur(radius: g)
+                                    }
+                                    .padding(-2 * g)
+                            }
+                        }
+                    }
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 let start = words?.first?.start ?? 0

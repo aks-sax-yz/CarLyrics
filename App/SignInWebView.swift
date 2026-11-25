@@ -15,6 +15,18 @@ struct SignInWebView: UIViewRepresentable {
     var script: String? = nil
     var onMessage: @MainActor (Any) -> Void = { _ in }
 
+    /// Apple's sign-in pages offer a passkey first, which can't work in an app's web view (iOS allows
+    /// passkeys only in browsers), and then sit there (Akshat, 2026-11-25, Spotify's "Continue with
+    /// Apple"). Hiding WebAuthn from apple.com pages makes them ask for the Apple ID password and the
+    /// code on the iPhone instead.
+    static let hidePasskeys = """
+    (() => {
+      if (!/(^|\\.)apple\\.com$/.test(location.hostname)) return;
+      try { Object.defineProperty(window, 'PublicKeyCredential', { value: undefined, configurable: true }); } catch (e) {}
+      try { Object.defineProperty(Navigator.prototype, 'credentials', { get: () => undefined, configurable: true }); } catch (e) {}
+    })();
+    """
+
     static let safariUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
 
     func makeCoordinator() -> Coordinator { Coordinator(onMessage: onMessage) }
@@ -37,6 +49,7 @@ struct SignInWebView: UIViewRepresentable {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         config.preferences.javaScriptCanOpenWindowsAutomatically = true
+        config.userContentController.addUserScript(WKUserScript(source: hidePasskeys, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         if let script {
             config.userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         }

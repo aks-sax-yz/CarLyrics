@@ -42,17 +42,28 @@ enum WordSweep {
         }
     }
 
-    /// The pieces for one row: `text` is the words joined by spaces, measured in `font`.
-    static func segments(_ words: [Word], text: String, font: UIFont) -> [Segment] {
-        guard !words.isEmpty else { return [] }
+    /// Each word's place and time in the row: `text` is the words joined by spaces, measured in `font`.
+    static func spans(_ words: [Word], text: String, font: UIFont) -> [Segment] {
         let chars = Array(text)
-        var spans: [(x0: CGFloat, x1: CGFloat, t0: Double, t1: Double)] = []
+        var out: [Segment] = []
         var at = 0
         for w in words {
             let end = min(at + w.chars, chars.count)
-            spans.append((width(chars[..<min(at, chars.count)], font), width(chars[..<end], font), w.start, w.end))
+            out.append(Segment(x0: width(chars[..<min(at, chars.count)], font), x1: width(chars[..<end], font), t0: w.start, t1: w.end))
             at = end + 1
         }
+        return out
+    }
+
+    /// Held words (sung 1s+, 2–7 letters): they get Apple Music's glow (the swell can't be drawn here).
+    static func held(_ words: [Word], text: String, font: UIFont) -> [Segment] {
+        zip(words, spans(words, text: text, font: font)).filter { w, _ in w.end - w.start >= 1 && (2...7).contains(w.chars) }.map(\.1)
+    }
+
+    /// The pieces for one row: `text` is the words joined by spaces, measured in `font`.
+    static func segments(_ words: [Word], text: String, font: UIFont) -> [Segment] {
+        guard !words.isEmpty else { return [] }
+        let spans = spans(words, text: text, font: font).map { (x0: $0.x0, x1: $0.x1, t0: $0.t0, t1: $0.t1) }
         // Greedy: extend the current piece while every word stays on its straight line.
         var groups: [[Int]] = []
         for k in spans.indices {

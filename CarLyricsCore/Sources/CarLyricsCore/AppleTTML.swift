@@ -12,6 +12,9 @@ import FoundationXML
 /// - `<head>…<transliterations><transliteration><text for="L1">` holds a Latin-script copy of a
 ///   line (Hindi etc., asked for with `l[script]`); it replaces that line, word timings included.
 ///   `<translations>` are ignored.
+/// - `<iTunesMetadata leadingSilence>` and `<audio lyricOffset role>`: per-recording timing
+///   metadata. The non-spatial (stereo) `lyricOffset` is added to every time, as YouLy+ does; the
+///   spatial (Dolby Atmos) one and `leadingSilence` are only reported in `source` for now.
 public enum AppleTTML {
     public static func parse(_ ttml: String) -> TimedLyrics? {
         let delegate = Collector()
@@ -27,8 +30,21 @@ public enum AppleTTML {
         }.filter { !$0.text.isEmpty }
         guard !lines.isEmpty else { return nil }
         let synced = delegate.sawTiming
-        return TimedLyrics(lines: synced ? lines : lines.map { var l = $0; l.timeMs = 0; return l },
-                           isSynced: synced)
+        let shift = delegate.audioOffsets.first { $0.role != "spatial" }?.ms ?? 0
+        let shifted = lines.map { line -> LyricsLine in
+            guard synced else { var l = line; l.timeMs = 0; return l }
+            var l = line
+            l.timeMs += shift
+            l.endMs = l.endMs.map { $0 + shift }
+            l.words = l.words?.map { var w = $0; w.timeMs += shift; w.endMs = w.endMs.map { $0 + shift }; return w }
+            return l
+        }
+        var lyrics = TimedLyrics(lines: shifted, isSynced: synced)
+        // Logged (never shown) so the timing metadata of real songs is on record.
+        let meta = ["leadingSilence=\(delegate.leadingSilenceMs.map { "\($0)ms" } ?? "-")"]
+            + delegate.audioOffsets.map { "lyricOffset[\($0.role ?? "-")]=\($0.ms)ms" }
+        lyrics.source = meta.joined(separator: " ")
+        return lyrics
     }
 
     /// "12.345", "1:02.345", "1:02:03.456", or with a trailing "s" → ms.
@@ -41,6 +57,13 @@ public enum AppleTTML {
             total = total * 60 + v
         }
         return Int((total * 1000).rounded())
+    }
+
+    /// A signed offset in seconds ("-0.271") → ms.
+    static func signedMs(_ raw: String?) -> Int? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespaces) else { return nil }
+        let negative = raw.hasPrefix("-")
+        return ms(negative ? String(raw.dropFirst()) : raw.replacingOccurrences(of: "+", with: "")).map { negative ? -$0 : $0 }
     }
 
     /// Builds one line from syllables and text.
@@ -85,6 +108,8 @@ public enum AppleTTML {
         var lines: [LineBuilder] = []
         var transliterations: [String: LineBuilder] = [:]
         var sawTiming = false
+        var leadingSilenceMs: Int?
+        var audioOffsets: [(role: String?, ms: Int)] = []
 
         private var current: LineBuilder?
         private var inTransliterations = false
@@ -100,6 +125,9 @@ public enum AppleTTML {
         func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                     qualifiedName: String?, attributes a: [String: String]) {
             switch local(name) {
+            case "iTunesMetadata": leadingSilenceMs = AppleTTML.ms(a["leadingSilence"])
+            case "audio":
+                if let ms = AppleTTML.signedMs(a["lyricOffset"]) { audioOffsets.append((a["role"].flatMap { $0.isEmpty ? nil : $0 }, ms)) }
             case "transliterations": inTransliterations = true
             case "text" where inTransliterations:
                 inTransliterationText = true

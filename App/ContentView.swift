@@ -141,9 +141,12 @@ private struct LyricsList: View {
         let text = line.words.map { $0.map(\.text).joined(separator: " ") } ?? line.text
         let dates = coordinator.lineDates
         return Group {
-            if isCurrent, let words = line.words, lyrics.isSynced, index < dates.count {
-                WordLineView(words: words, lineEndMs: line.endMs, lineStart: dates[index],
-                             lineTimeMs: line.timeMs, fontSize: 30)
+            if isCurrent, lyrics.isSynced, index < dates.count, !text.isEmpty {
+                // Line-timed lyrics (Spotify, LRCLIB) still sweep, word by word at an even pace across the line.
+                let end = line.endMs ?? (index + 1 < lyrics.lines.count ? lyrics.lines[index + 1].timeMs : line.timeMs + 3000)
+                WordLineView(words: line.words ?? WordLineView.estimated(text, from: line.timeMs, to: end),
+                             lineEndMs: end, lineStart: dates[index], lineTimeMs: line.timeMs, fontSize: 30,
+                             swell: line.words != nil)
             } else {
                 Text(text.isEmpty ? "♪" : text)
                     .font(.system(size: 30, weight: .bold))

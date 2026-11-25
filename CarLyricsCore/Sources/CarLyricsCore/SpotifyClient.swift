@@ -161,7 +161,9 @@ public struct SpotifyClient: Sendable {
         struct Item: Codable {
             struct Artist: Codable { var name: String }
             struct Album: Codable { var name: String? }
+            struct IDs: Codable { var isrc: String? }
             var id: String?
+            var external_ids: IDs?
             var name: String
             var artists: [Artist]
             var album: Album?
@@ -201,7 +203,8 @@ public struct SpotifyClient: Sendable {
             album: item.album?.name,
             durationMs: item.duration_ms,
             source: .spotify,
-            catalogID: item.id
+            catalogID: item.id,
+            isrc: item.external_ids?.isrc
         )
         return PlaybackState(track: track, positionMs: cp.progress_ms ?? 0, isPlaying: cp.is_playing, sampledAt: now)
     }

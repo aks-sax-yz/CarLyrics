@@ -15,15 +15,19 @@ public struct NowPlayingTrack: Equatable, Codable, Sendable {
     /// The service's own ID: Apple Music's catalog ID (`playbackStoreID`, nil for local files) or
     /// Spotify's track ID. Asks that service for its lyrics. Not part of `identityKey`.
     public var catalogID: String? = nil
+    /// The recording's ISRC (Spotify reports it): finds the same recording on Apple Music, whose
+    /// word timing then fits Spotify's audio too.
+    public var isrc: String? = nil
 
     public init(title: String, artist: String, album: String? = nil, durationMs: Int? = nil, source: Source,
-                catalogID: String? = nil) {
+                catalogID: String? = nil, isrc: String? = nil) {
         self.title = title
         self.artist = artist
         self.album = album
         self.durationMs = durationMs
         self.source = source
         self.catalogID = catalogID
+        self.isrc = isrc
     }
 
     /// Stable identity for cache keys and change detection. Deliberately ignores `source`

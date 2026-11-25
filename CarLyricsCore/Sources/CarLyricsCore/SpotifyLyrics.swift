@@ -61,6 +61,27 @@ public enum SpotifyLyrics {
         return lyrics
     }
 
+    /// The Spotify track for a recording's ISRC (an Apple Music song's twin) whose length matches
+    /// `durationMs` to the second, or nil. Web API search, with the web player's token.
+    public static func trackID(isrc: String, durationMs: Int?, tokens: Tokens, session: URLSession = .shared) async throws -> String? {
+        var comps = URLComponents(string: "https://api.spotify.com/v1/search")!
+        comps.queryItems = [.init(name: "q", value: "isrc:\(isrc)"), .init(name: "type", value: "track"), .init(name: "limit", value: "5")]
+        var r = URLRequest(url: comps.url!, timeoutInterval: 10)
+        r.setValue("Bearer \(tokens.access)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: r)
+        switch (response as? HTTPURLResponse)?.statusCode ?? 0 {
+        case 200: return trackID(fromSearch: data, durationMs: durationMs)
+        case 401, 403: throw Failure.tokenRejected
+        case let status: throw Failure.http(status)
+        }
+    }
+
+    static func trackID(fromSearch data: Data, durationMs: Int?) -> String? {
+        struct Doc: Decodable { struct T: Decodable { struct I: Decodable { var id: String; var duration_ms: Int? }; var items: [I] }; var tracks: T }
+        guard let durationMs, let items = (try? JSONDecoder().decode(Doc.self, from: data))?.tracks.items else { return nil }
+        return items.first { $0.duration_ms.map { abs($0 - durationMs) <= AppleMusicLyrics.durationTolerance } ?? false }?.id
+    }
+
     public static func fetch(trackID: String, tokens: Tokens, session: URLSession = .shared) async throws -> TimedLyrics {
         let (data, response) = try await session.data(for: request(trackID: trackID, tokens: tokens))
         switch outcome(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: data) {

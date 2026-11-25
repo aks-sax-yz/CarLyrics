@@ -43,6 +43,21 @@ final class AppleTTMLTests: XCTestCase {
         XCTAssertEqual(lyrics.lines[0].timeMs, 2000)
     }
 
+    func testStereoLyricOffsetShiftsTimesSpatialOnlyLogged() throws {
+        let meta = #"<head><metadata><iTunesMetadata xmlns="http://music.apple.com/lyric-ttml-internal" leadingSilence="0.180"><audio lyricOffset="-0.271" role="spatial"/><audio lyricOffset="0.5"/></iTunesMetadata></metadata></head>"#
+        let ttml = head + meta + #"<body><div><p begin="1.000" end="2.000" itunes:key="L1"><span begin="1.000" end="1.400">One</span> <span begin="1.400" end="2.000">two</span></p></div></body></tt>"#
+        let lyrics = try XCTUnwrap(AppleTTML.parse(ttml))
+        XCTAssertEqual(lyrics.lines[0].timeMs, 1500)
+        XCTAssertEqual(lyrics.lines[0].endMs, 2500)
+        XCTAssertEqual(lyrics.lines[0].words?.map(\.timeMs), [1500, 1900])
+        XCTAssertEqual(lyrics.lines[0].words?.map(\.endMs), [1900, 2500])
+        XCTAssertEqual(lyrics.source, "leadingSilence=180ms lyricOffset[spatial]=-271ms lyricOffset[-]=500ms")
+
+        let spatialOnly = head + #"<head><metadata><iTunesMetadata leadingSilence="0"><audio lyricOffset="-0.271" role="spatial"/></iTunesMetadata></metadata></head>"#
+            + #"<body><div><p begin="1.000" end="2.000">Hi</p></div></body></tt>"#
+        XCTAssertEqual(try XCTUnwrap(AppleTTML.parse(spatialOnly)).lines[0].timeMs, 1000)
+    }
+
     func testGarbageIsNil() {
         XCTAssertNil(AppleTTML.parse("not xml"))
         XCTAssertNil(AppleTTML.parse(#"<tt xmlns="http://www.w3.org/ns/ttml"><body/></tt>"#))

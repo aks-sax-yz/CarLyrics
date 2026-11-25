@@ -14,6 +14,8 @@ struct WordLineView: View {
     let lineStart: Date
     let lineTimeMs: Int
     let fontSize: CGFloat
+    /// Held-word swell: only for real word timings, not `estimated` ones.
+    var swell = true
 
     var body: some View {
         TimelineView(.animation) { context in
@@ -25,7 +27,23 @@ struct WordLineView: View {
             }
             .font(.system(size: fontSize, weight: .bold))
             .textRenderer(WordLineRenderer(nowMs: nowMs, timings: timings, em: fontSize,
-                                    swell: !ProcessInfo.processInfo.isLowPowerModeEnabled))
+                                    swell: swell && !ProcessInfo.processInfo.isLowPowerModeEnabled))
+        }
+    }
+
+    /// Words for a line-timed line: its time shared out by character count (spaces included), so the
+    /// karaoke sweep crosses the line at an even pace.
+    static func estimated(_ text: String, from start: Int, to end: Int) -> [LyricsLine.Word] {
+        let words = text.split(separator: " ")
+        let total = Double(max(text.count, 1))
+        let span = Double(max(end - start, 1))
+        var at = 0
+        return words.map { w in
+            let s = start + Int(span * Double(at) / total)
+            at += w.count
+            let e = start + Int(span * Double(at) / total)
+            at += 1
+            return LyricsLine.Word(timeMs: s, text: String(w), endMs: e)
         }
     }
 

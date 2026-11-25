@@ -22,9 +22,14 @@ widgets page for every vehicle. This app:
      sign-in. If Apple refuses that token, Settings › Apple Music offers music.apple.com's own
      sign-in instead (password + code; passkeys can't work inside apps). Line-timed when Apple
      has no word timing.
-   - **Spotify songs:** Spotify's own lyrics (Musixmatch's, mostly line-timed), after a separate
-     *Sign In for Spotify Lyrics* on Spotify's web page (it presents as Safari so Google sign-in
-     works). The page's own requests carry the tokens; a small script reports them.
+   - **Spotify songs:** Apple's word-timed lyrics of the same recording (found by ISRC, used only
+     when Apple's length matches Spotify's to the second), else Spotify's own lyrics (Musixmatch's,
+     mostly line-timed) after a separate *Sign In for Spotify Lyrics* on Spotify's web page (it
+     presents as Safari so Google sign-in works; Apple pages there are kept off passkeys, which
+     can't work in an app's web view). The page's own requests carry the tokens; a script reports them.
+   - **Apple Music songs Apple has no lyrics for:** Spotify's, for the same recording (ISRC + length).
+   - Apple's TTML `<audio lyricOffset>` (stereo) is added to every time, as Apple's player does;
+     `leadingSilence` and the Atmos offset are logged with each song (`lyrics "…" apple …`).
    - Both are **private and unofficial** (likely against Apple's/Spotify's terms; personal use).
      Any failure falls back to LRCLIB; a song a service has no lyrics for is remembered.
 3. **Runs the sync engine** every second to find the current line from the playback position.
@@ -167,9 +172,14 @@ A SideStore install signs the app with your team ID appended, so use
 
 With word-timed lyrics (Apple Music), the app's current line brightens word by word with a soft
 edge, and a word held 1s+ (2–7 letters) swells letter by letter and glows, as in Apple Music.
-On CarPlay, with Line Transition set to **Karaoke**, the sweep follows the words: words sung at an
-even pace share one timer bar, so a row needs 1–2 (at most 4); the lock screen keeps one sweep
-from the first word's start to the last word's end, and the Dynamic Island has none. If iOS ends
+Line-timed lyrics sweep at an even pace across the line. On CarPlay and the lock screen, with Line
+Transition set to **Karaoke**, the sweep follows the words: words sung at an even pace share one
+timer bar, so a row needs 1–2 (at most 4); held words glow (a blurred-mask shadow copy, since only
+timers animate there); the Dynamic Island has no sweep.
+
+**Lines slide up on the phone:** away from CarPlay (Slide or Karaoke), the app pushes the lock
+screen once per line and it slides the next line up into place, like Apple Music. In the car iOS
+delays those pushes 10–30s, so CarPlay keeps the on-time clocked window and its bottom-to-top sweep. If iOS ends
 the Live Activity within a minute of an update with word timings, the app goes back to line
 sweeps until CarPlay disconnects (`word sweep OFF` in the log).
 

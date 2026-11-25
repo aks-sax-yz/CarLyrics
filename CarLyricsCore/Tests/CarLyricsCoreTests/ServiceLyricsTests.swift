@@ -59,8 +59,25 @@ final class ServiceLyricsTests: XCTestCase {
         if case .failure(let f) = SpotifyLyrics.outcome(status: 404, body: Data()) { XCTAssertEqual(f, .notFound) } else { XCTFail() }
     }
 
-    func testSpotifyPlaybackCarriesTrackID() throws {
-        let body = Data(#"{"is_playing":true,"progress_ms":10,"item":{"id":"4uLU6hMCjMI75M1A2tKUQC","name":"Song","artists":[{"name":"A"}],"duration_ms":1000}}"#.utf8)
-        XCTAssertEqual(try SpotifyClient.decodePlayback(body).track.catalogID, "4uLU6hMCjMI75M1A2tKUQC")
+    func testSpotifyPlaybackCarriesTrackIDAndISRC() throws {
+        let body = Data(#"{"is_playing":true,"progress_ms":10,"item":{"id":"4uLU6hMCjMI75M1A2tKUQC","external_ids":{"isrc":"USUG11904206"},"name":"Song","artists":[{"name":"A"}],"duration_ms":1000}}"#.utf8)
+        let track = try SpotifyClient.decodePlayback(body).track
+        XCTAssertEqual(track.catalogID, "4uLU6hMCjMI75M1A2tKUQC")
+        XCTAssertEqual(track.isrc, "USUG11904206")
+    }
+
+    func testSpotifyTrackForISRCOnlyWhenLengthMatches() {
+        let body = Data(#"{"tracks":{"items":[{"id":"albumEdit","duration_ms":215000},{"id":"single","duration_ms":200123}]}}"#.utf8)
+        XCTAssertEqual(SpotifyLyrics.trackID(fromSearch: body, durationMs: 200_000), "single")
+        XCTAssertNil(SpotifyLyrics.trackID(fromSearch: body, durationMs: 202_000))
+        XCTAssertNil(SpotifyLyrics.trackID(fromSearch: body, durationMs: nil))
+    }
+
+    func testAppleSongForISRCOnlyWhenLengthMatches() {
+        let body = Data(#"{"data":[{"id":"111","attributes":{"durationInMillis":203000}},{"id":"222","attributes":{"durationInMillis":200040}}]}"#.utf8)
+        XCTAssertEqual(AppleMusicLyrics.songID(fromISRCResponse: body, durationMs: 200_400), "222") // the single, not the album edit
+        XCTAssertNil(AppleMusicLyrics.songID(fromISRCResponse: body, durationMs: 201_000))     // off by ~1s: no
+        XCTAssertNil(AppleMusicLyrics.songID(fromISRCResponse: body, durationMs: nil))         // length unknown: no
+        XCTAssertNil(AppleMusicLyrics.songID(fromISRCResponse: Data(#"{"data":[]}"#.utf8), durationMs: 200_000))
     }
 }

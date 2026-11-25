@@ -39,6 +39,9 @@ struct LyricsActivityAttributes: ActivityAttributes {
         /// Album background: a small blurred copy of the artwork in the App Group (file name), drawn
         /// over `background` (its average colour, darkened to match), like Apple Music.
         var art: String? = nil
+        /// The phone away from CarPlay: `lines` starts at the current line and is pushed once per line,
+        /// so the lock screen can slide lines up (only timers animate otherwise). nil = clocked window.
+        var slide: Bool? = nil
     }
 
     /// Line-switch styles. Slide/Wipe/Karaoke switch on iOS's clock (only timer views animate in a

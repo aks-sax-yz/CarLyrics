@@ -85,6 +85,19 @@ final class SpotifyLyricsAccount: NSObject, ObservableObject, WKScriptMessageHan
         }
     }
 
+    /// Spotify's lyrics of an Apple Music song's twin (same recording by ISRC, same length).
+    func lyrics(isrc: String, durationMs: Int?) async throws -> TimedLyrics {
+        guard isConnected else { throw SpotifyLyrics.Failure.tokenRejected }
+        if (tokens?.expires ?? .distantPast) < Date() { await refresh() }
+        guard let current = tokens else { throw SpotifyLyrics.Failure.tokenRejected }
+        guard let id = try await SpotifyLyrics.trackID(isrc: isrc, durationMs: durationMs, tokens: current) else {
+            throw SpotifyLyrics.Failure.notFound // not on Spotify, or not the same length
+        }
+        var lyrics = try await self.lyrics(trackID: id)
+        lyrics.source = (lyrics.source ?? "spotify") + " isrc=\(isrc)"
+        return lyrics
+    }
+
     func signOut() async {
         tokens = nil
         isConnected = false
