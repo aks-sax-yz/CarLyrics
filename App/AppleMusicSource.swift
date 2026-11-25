@@ -55,7 +55,8 @@ final class AppleMusicSource {
             artist: item.artist ?? "Unknown",
             album: item.albumTitle,
             durationMs: duration.isFinite ? Int(duration * 1000) : nil,
-            source: .appleMusic
+            source: .appleMusic,
+            catalogID: item.playbackStoreID.isEmpty ? nil : item.playbackStoreID // empty for local files
         )
         return PlaybackState(
             track: track,

@@ -62,6 +62,8 @@ struct SettingsView: View {
                     Text("In Shortcuts › Automation, add CarPlay › Connects → Start Car Lyrics and CarPlay › Disconnects → Stop Car Lyrics. If the lyrics get stuck while driving, say \u{201C}Car Lyrics froze\u{201D} to Siri to mark it in the log.")
                 }
 
+                AppleMusicLyricsSection(account: coordinator.appleAccount)
+
                 spotifySection
 
                 Section {
@@ -110,8 +112,75 @@ struct SettingsView: View {
                 }
             }
             if let spotifyError { Text(spotifyError).foregroundStyle(.red) }
+            SpotifyLyricsRow(account: coordinator.spotifyLyrics)
         } header: {
             Text("Spotify")
+        } footer: {
+            Text("Connect Spotify tells Car Lyrics what's playing; it opens Safari's sign-in, so every option works there. Spotify's own lyrics need Spotify's web sign-in as well: email, an emailed code, Apple or Google. Passkeys don't work inside apps. Songs without them use LRCLIB.")
+        }
+    }
+}
+
+/// Apple Music's word-timed lyrics: on by default, using the phone's own Apple Music account.
+private struct AppleMusicLyricsSection: View {
+    @ObservedObject var account: AppleMusicAccount
+    @State private var signingIn = false
+
+    var body: some View {
+        Section {
+            Toggle("Apple Music Lyrics", isOn: $account.enabled)
+            if account.enabled {
+                Text(account.status).font(.footnote).foregroundStyle(.secondary)
+                if account.needsSignIn || account.via == .web {
+                    Button(account.via == .web ? "Sign In Again" : "Sign In to Apple Music") {
+                        Task {
+                            await WebCookies.clear(domain: "apple.com") // a stale login would close the sheet at once
+                            signingIn = true
+                        }
+                    }
+                }
+                if account.via != nil {
+                    Button("Disconnect Apple Music Lyrics", role: .destructive) { Task { await account.disconnect() } }
+                }
+            }
+        } header: {
+            Text("Apple Music")
+        } footer: {
+            Text("Word-by-word lyrics from Apple Music, using the Apple Music account already on this phone, so there's nothing to sign in to. If Apple refuses it, sign in here instead: tap Sign In on Apple's page, then your password and the code (passkeys don't work inside apps). Songs Apple has no lyrics for use LRCLIB.")
+        }
+        .sheet(isPresented: $signingIn) {
+            SignInSheet(title: "Apple Music",
+                        web: SignInWebView(url: URL(string: "https://music.apple.com/us/browse")!, userAgent: SignInWebView.safariUserAgent))
+                .task {
+                    // Signed in once Apple sets the Apple Music user token cookie.
+                    while !Task.isCancelled {
+                        if let token = await WebCookies.value("media-user-token", domain: "apple.com") {
+                            await account.signedIn(userToken: token)
+                            signingIn = false
+                            return
+                        }
+                        try? await Task.sleep(for: .seconds(1))
+                    }
+                }
+        }
+    }
+}
+
+/// Spotify's own lyrics: a separate web sign-in (see SpotifyLyricsAccount).
+private struct SpotifyLyricsRow: View {
+    @ObservedObject var account: SpotifyLyricsAccount
+    @State private var signingIn = false
+
+    var body: some View {
+        if account.isConnected {
+            LabeledContent("Spotify Lyrics", value: account.status)
+            Button("Sign Out of Spotify Lyrics", role: .destructive) { Task { await account.signOut() } }
+        } else {
+            Button("Sign In for Spotify Lyrics") { signingIn = true }
+                .sheet(isPresented: $signingIn) {
+                    SignInSheet(title: "Spotify", web: account.signInPage())
+                        .onAppear { account.onSignedIn = { signingIn = false } }
+                }
         }
     }
 }

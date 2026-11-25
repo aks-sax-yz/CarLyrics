@@ -72,6 +72,21 @@ public enum AppleMusicLyrics {
         throw Failure.notFound
     }
 
+    /// The signed-in account's storefront (`in`), from `/v1/me/storefront`.
+    public static func fetchStorefront(developer: String, user: String, session: URLSession = .shared) async throws -> String {
+        var r = URLRequest(url: URL(string: "https://amp-api.music.apple.com/v1/me/storefront")!, timeoutInterval: 10)
+        r.setValue("Bearer \(developer)", forHTTPHeaderField: "Authorization")
+        r.setValue(user, forHTTPHeaderField: "media-user-token")
+        r.setValue("https://music.apple.com", forHTTPHeaderField: "Origin")
+        r.setValue("https://music.apple.com/", forHTTPHeaderField: "Referer")
+        let (data, response) = try await session.data(for: r)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard status == 200 else { throw status == 401 ? Failure.developerTokenRejected : status == 403 ? .userTokenRejected : .http(status) }
+        struct Doc: Decodable { struct S: Decodable { var id: String }; var data: [S] }
+        guard let id = (try? JSONDecoder().decode(Doc.self, from: data))?.data.first?.id else { throw Failure.http(status) }
+        return id
+    }
+
     // MARK: Developer token
 
     /// The web player's developer token (`kid: WebPlayKid`), from its script bundle. No sign-in needed.

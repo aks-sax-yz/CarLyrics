@@ -153,6 +153,8 @@ final class NowPlayingCoordinator: ObservableObject {
 
     let appleMusic = AppleMusicSource()
     let spotify = SpotifyController()
+    let appleAccount = AppleMusicAccount()
+    let spotifyLyrics = SpotifyLyricsAccount()
     private let keepAlive = BackgroundKeepAlive()
     #if targetEnvironment(simulator)
     private let demoSource = DemoSource()
@@ -471,6 +473,7 @@ final class NowPlayingCoordinator: ObservableObject {
     /// Load lyrics for a newly-detected song. Cached lyrics resolve synchronously (instant); a
     /// network lookup runs in a separate task so it never blocks the 1s tick loop — the
     /// current song's activity keeps advancing while the next song's lyrics download.
+    /// Order: the song's own service (Apple Music's word-timed lyrics / Spotify's), then LRCLIB.
     private func loadLyrics(for track: NowPlayingTrack) {
         // New token FIRST, so a still-running fetch for the previous song can't land on this one
         // (it used to overwrite a cached song's lyrics when you skipped quickly).
@@ -478,40 +481,86 @@ final class NowPlayingCoordinator: ObservableObject {
         lyricsFetchToken = token
         lyricsRetryAt = nil
         currentLineIndex = nil
-        if let cached = store.load(for: track) {
+        let cached = store.load(for: track)
+        if let cached {
             // The cache keeps the original script; romanize on load so converter fixes apply.
             lyrics = Transliterator.romanized(cached)
             status = cached.isSynced ? "Synced lyrics (cached)" : "Plain lyrics (cached)"
-            return
+            // A cached LRCLIB copy is upgraded once, in the background, when the service can do better.
+            guard service(for: track, cached: cached) != nil else { return }
+        } else {
+            status = "Fetching lyrics…"
+            lyrics = nil
         }
-        status = "Fetching lyrics…"
-        lyrics = nil
-        Task { [weak self] in
-            guard let self else { return }
+        Task { [weak self] in await self?.fetchLyrics(for: track, token: token, cached: cached) }
+    }
+
+    /// The service whose own lyrics to ask for ("apple" / "spotify"), or nil: not set up, no ID
+    /// (local files), or the cache already holds a service's lyrics or knows this one has none.
+    private func service(for track: NowPlayingTrack, cached: TimedLyrics?) -> String? {
+        guard let id = track.catalogID, !id.isEmpty else { return nil }
+        let name: String
+        switch track.source {
+        case .appleMusic:
+            guard appleAccount.enabled else { return nil }
+            name = "apple"
+        case .spotify:
+            guard spotifyLyrics.isConnected else { return nil }
+            name = "spotify"
+        }
+        if let source = cached?.source,
+           source.hasPrefix("apple") || source.hasPrefix("spotify") || source.contains(" \(name)=none") { return nil }
+        return name
+    }
+
+    private func fetchLyrics(for track: NowPlayingTrack, token: UUID, cached: TimedLyrics?) async {
+        var missed: String? // the service said it has no lyrics: remember, so it isn't asked again
+        if let name = service(for: track, cached: cached), let id = track.catalogID {
             do {
-                let fetched = try await lrclib.lyrics(for: track)
-                guard lyricsFetchToken == token else { return } // superseded by a newer song
-                let display = Transliterator.romanized(fetched)
-                EventLog.log("lyrics \"\(track.title)\" \(fetched.source ?? "?") lines=\(fetched.lines.count) synced=\(fetched.isSynced) offset=\(fetched.offsetMs)ms")
-                lyrics = display
-                store.save(fetched, for: track) // original script, so romanizer fixes reach cached songs
-                status = display.isSynced ? "Synced lyrics" : "Plain lyrics (no timing)"
-            } catch let LRCLibClient.LRCLibError.badResponse(code) {
+                let fetched = name == "apple" ? try await appleAccount.lyrics(songID: id)
+                                              : try await spotifyLyrics.lyrics(trackID: id)
                 guard lyricsFetchToken == token else { return }
-                lyrics = nil
-                status = "Lyrics HTTP error \(code), retrying"
-                lyricsRetryAt = Date().addingTimeInterval(Self.lyricsRetryDelay)
-            } catch is LRCLibClient.LRCLibError {
-                guard lyricsFetchToken == token else { return }
-                lyrics = nil
-                status = "No lyrics found"
+                show(fetched, for: track)
+                return
             } catch {
+                let none = (error as? AppleMusicLyrics.Failure) == .notFound || (error as? SpotifyLyrics.Failure) == .notFound
+                EventLog.log("lyrics \"\(track.title)\" \(name) \(none ? "has none" : "failed: \(error)")")
                 guard lyricsFetchToken == token else { return }
-                lyrics = nil
-                status = "Lyrics fetch failed: \((error as NSError).localizedDescription), retrying"
-                lyricsRetryAt = Date().addingTimeInterval(Self.lyricsRetryDelay)
+                if none { missed = name }
+                if var cached {
+                    if let missed { cached.source = (cached.source ?? "lrclib") + " \(missed)=none"; store.save(cached, for: track) }
+                    return // keep showing the cached copy
+                }
             }
         }
+        do {
+            var fetched = try await lrclib.lyrics(for: track)
+            guard lyricsFetchToken == token else { return } // superseded by a newer song
+            if let missed { fetched.source = (fetched.source ?? "lrclib") + " \(missed)=none" }
+            show(fetched, for: track)
+        } catch let LRCLibClient.LRCLibError.badResponse(code) {
+            guard lyricsFetchToken == token else { return }
+            lyrics = nil
+            status = "Lyrics HTTP error \(code), retrying"
+            lyricsRetryAt = Date().addingTimeInterval(Self.lyricsRetryDelay)
+        } catch is LRCLibClient.LRCLibError {
+            guard lyricsFetchToken == token else { return }
+            lyrics = nil
+            status = "No lyrics found"
+        } catch {
+            guard lyricsFetchToken == token else { return }
+            lyrics = nil
+            status = "Lyrics fetch failed: \((error as NSError).localizedDescription), retrying"
+            lyricsRetryAt = Date().addingTimeInterval(Self.lyricsRetryDelay)
+        }
+    }
+
+    private func show(_ fetched: TimedLyrics, for track: NowPlayingTrack) {
+        let display = Transliterator.romanized(fetched)
+        EventLog.log("lyrics \"\(track.title)\" \(fetched.source ?? "?") lines=\(fetched.lines.count) synced=\(fetched.isSynced) words=\(fetched.lines.contains { $0.words != nil }) offset=\(fetched.offsetMs)ms")
+        lyrics = display
+        store.save(fetched, for: track) // original script, so romanizer fixes reach cached songs
+        status = display.isSynced ? "Synced lyrics" : "Plain lyrics (no timing)"
     }
 
     // MARK: Sync + Live Activity
