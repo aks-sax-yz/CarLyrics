@@ -3,6 +3,23 @@
 2026-11-24. Approved in chat by Akshat ("yes go ahead"). Built on `clocked-lyrics`. Nothing ships
 to `main` (that publishes a release) until he says so.
 
+## Changes after approval (2026-11-25, Akshat)
+
+- **Apple Music: no sign-in by default.** The user token is minted from the Apple Music account
+  already on the phone (`SKCloudServiceController.requestUserToken(forDeveloperToken:)` with the web
+  player's developer token, fetched from music.apple.com's script). The music.apple.com web-view
+  sign-in (§1) is the fallback when Apple refuses that token. Passkeys can't work in an app's web
+  view (iOS allows them only in browsers / for the app's own domains).
+- **Spotify's own lyrics** (Akshat: "yes we can do that"): `color-lyrics` with the web player's
+  tokens, from a separate *Sign In for Spotify Lyrics* web view that presents as Safari (so Google
+  sign-in works). A document-start script reports the Authorization / client-token headers of the
+  page's own requests; refresh = load open.spotify.com off screen (~1h tokens). LRCLIB fallback.
+- **Album background** = the blurred artwork on the lock screen and CarPlay (96px JPEG in the App
+  Group, `ContentState.art`), not the average colour. CarPlay ignores `activityBackgroundTint`, so
+  the CarPlay view paints Solid/Album itself.
+- Implemented on `clocked-lyrics` (34852f9 … fe9921c). The Apple web-player token was NOT tested from
+  the Mac (Claude Code's safety check blocked it); it's first exercised on the phone.
+
 ## Goal
 
 1. Apple Music songs use Apple's own lyrics, timed word by word (syllable by syllable). The app
