@@ -28,6 +28,15 @@
       "versions": [
         {
           "version": "1.0",
+          "buildVersion": "15",
+          "date": "2026-11-26T15:21:06Z",
+          "localizedDescription": "Build 15 (unsigned IPA for SideStore).",
+          "downloadURL": "https://github.com/aks-sax-yz/CarLyrics/releases/download/v1.0-15/CarLyrics.ipa",
+          "size": 2333464,
+          "minOSVersion": "26.0"
+        },
+        {
+          "version": "1.0",
           "buildVersion": "14",
           "date": "2026-11-26T09:36:24Z",
           "localizedDescription": "Build 14 (unsigned IPA for SideStore).",
@@ -135,10 +144,10 @@
           "minOSVersion": "26.0"
         }
       ],
-      "downloadURL": "https://github.com/aks-sax-yz/CarLyrics/releases/download/v1.0-14/CarLyrics.ipa",
+      "downloadURL": "https://github.com/aks-sax-yz/CarLyrics/releases/download/v1.0-15/CarLyrics.ipa",
       "version": "1.0",
-      "versionDate": "2026-11-26T09:36:24Z",
-      "size": 2250086
+      "versionDate": "2026-11-26T15:21:06Z",
+      "size": 2333464
     }
   ],
   "news": []
