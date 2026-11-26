@@ -24,7 +24,8 @@ widgets page for every vehicle. This app:
      reaches the now-playing app, so a tapped line jumps YouTube Music. A new song is timed from the
      signal before it reached history; history's flips back to recent songs are ignored. A **drag inside
      YouTube Music** never reveals where it went: the lyrics then show unsynced with *Tap the line being
-     sung* (the tap jumps the song there). Auto only looks at YouTube Music when Apple Music and Spotify
+     sung* (the tap jumps the song there). Lyrics: Apple's word timing, else Spotify's (searched by title +
+     first artist), both only within a second of YouTube's length, else LRCLIB. Auto only looks at YouTube Music when Apple Music and Spotify
      aren't playing, and it can't tell apps apart: another app's audio (a podcast) would look like the
      last YouTube Music song resuming.
 2. **Fetches lyrics**, the song's own service first, then [LRCLIB](https://lrclib.net)

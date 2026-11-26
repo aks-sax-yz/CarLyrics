@@ -98,6 +98,20 @@ final class SpotifyLyricsAccount: NSObject, ObservableObject, WKScriptMessageHan
         return lyrics
     }
 
+    /// Spotify's lyrics for a song known only by title and artist (YouTube Music), same length within a second.
+    func lyrics(title: String, artist: String, durationMs: Int?) async throws -> TimedLyrics {
+        guard isConnected else { throw SpotifyLyrics.Failure.tokenRejected }
+        if (tokens?.expires ?? .distantPast) < Date() { await refresh() }
+        guard let current = tokens else { throw SpotifyLyrics.Failure.tokenRejected }
+        guard let id = try await SpotifyLyrics.trackID(title: title, artist: artist, durationMs: durationMs,
+                                                       tolerance: 1000, tokens: current) else {
+            throw SpotifyLyrics.Failure.notFound // not on Spotify, or not the same song and length
+        }
+        var lyrics = try await self.lyrics(trackID: id)
+        lyrics.source = (lyrics.source ?? "spotify") + " search"
+        return lyrics
+    }
+
     func signOut() async {
         tokens = nil
         isConnected = false

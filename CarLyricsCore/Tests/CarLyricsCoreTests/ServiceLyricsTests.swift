@@ -95,6 +95,17 @@ final class ServiceLyricsTests: XCTestCase {
         XCTAssertNil(SpotifyLyrics.trackID(fromSearch: body, durationMs: nil))
     }
 
+    func testSpotifyTrackByTitleNeedsTitleArtistAndLength() {
+        let body = Data(#"{"tracks":{"items":[{"id":"cover","duration_ms":210100,"name":"Lose My Mind","artists":[{"name":"Some Band"}]},{"id":"live","duration_ms":250000,"name":"Lose My Mind - Live","artists":[{"name":"Don Toliver"}]},{"id":"song","duration_ms":210400,"name":"Lose My Mind (feat. Doja Cat) [From F1® The Movie]","artists":[{"name":"Don Toliver"},{"name":"Doja Cat"}]}]}}"#.utf8)
+        let find = { (title: String, ms: Int) in
+            SpotifyLyrics.trackID(fromSearch: body, durationMs: ms, tolerance: 1000, title: title, artist: "Don Toliver")
+        }
+        XCTAssertEqual(find("Lose My Mind [From F1® The Movie] (feat. Doja Cat)", 210_000), "song")
+        XCTAssertNil(find("Lose My Mind", 212_000)) // not within a second
+        XCTAssertNil(find("Lost My Mind", 210_000))
+        XCTAssertEqual(SpotifyLyrics.cutTitle("Burn This Shit Down (from GTAVI: The Album)"), "Burn This Shit Down")
+    }
+
     func testAppleSongForISRCOnlyWhenLengthMatches() {
         let body = Data(#"{"data":[{"id":"111","attributes":{"durationInMillis":203000}},{"id":"222","attributes":{"durationInMillis":200040}}]}"#.utf8)
         XCTAssertEqual(AppleMusicLyrics.songID(fromISRCResponse: body, durationMs: 200_400), "222") // the single, not the album edit

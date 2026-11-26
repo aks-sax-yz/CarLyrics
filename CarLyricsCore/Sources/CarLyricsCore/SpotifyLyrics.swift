@@ -76,10 +76,53 @@ public enum SpotifyLyrics {
         }
     }
 
-    static func trackID(fromSearch data: Data, durationMs: Int?) -> String? {
-        struct Doc: Decodable { struct T: Decodable { struct I: Decodable { var id: String; var duration_ms: Int? }; var items: [I] }; var tracks: T }
+    /// The Spotify track for a song known by title and artist (YouTube Music says nothing else): searched
+    /// by title + first artist, kept only with the same title, that artist and a length within `tolerance`.
+    public static func trackID(title: String, artist: String, durationMs: Int?, tolerance: Int, tokens: Tokens,
+                               session: URLSession = .shared) async throws -> String? {
+        let firstArtist = artist.split(separator: ",").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? artist
+        var comps = URLComponents(string: "https://api.spotify.com/v1/search")!
+        comps.queryItems = [.init(name: "q", value: "\(cutTitle(title)) \(firstArtist)"), .init(name: "type", value: "track"),
+                            .init(name: "limit", value: "10")]
+        var r = URLRequest(url: comps.url!, timeoutInterval: 10)
+        r.setValue("Bearer \(tokens.access)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: r)
+        switch (response as? HTTPURLResponse)?.statusCode ?? 0 {
+        case 200: return trackID(fromSearch: data, durationMs: durationMs, tolerance: tolerance, title: title, artist: firstArtist)
+        case 401, 403: throw Failure.tokenRejected
+        case let status: throw Failure.http(status)
+        }
+    }
+
+    /// The first result of the same length (within `tolerance`), and when `title` is given, the same title
+    /// (ignoring "(feat. …)" / "[From …]" / " - Remastered" tails, case, accents) and `artist` among its artists.
+    static func trackID(fromSearch data: Data, durationMs: Int?, tolerance: Int = AppleMusicLyrics.durationTolerance,
+                        title: String? = nil, artist: String? = nil) -> String? {
+        struct Doc: Decodable {
+            struct T: Decodable {
+                struct I: Decodable { struct A: Decodable { var name: String }; var id: String; var duration_ms: Int?; var name: String?; var artists: [A]? }
+                var items: [I]
+            }
+            var tracks: T
+        }
         guard let durationMs, let items = (try? JSONDecoder().decode(Doc.self, from: data))?.tracks.items else { return nil }
-        return items.first { $0.duration_ms.map { abs($0 - durationMs) <= AppleMusicLyrics.durationTolerance } ?? false }?.id
+        return items.first { item in
+            guard let d = item.duration_ms, abs(d - durationMs) <= tolerance else { return false }
+            guard let title else { return true }
+            return norm(item.name ?? "") == norm(title)
+                && (artist.map { a in (item.artists ?? []).contains { norm($0.name) == norm(a) } } ?? true)
+        }?.id
+    }
+
+    /// A title without its "(feat. …)", "[From …]" or " - Remastered" tail.
+    static func cutTitle(_ s: String) -> String {
+        var t = s
+        for cut in [" (", " [", " - "] { if let r = t.range(of: cut) { t = String(t[..<r.lowerBound]) } }
+        return t
+    }
+
+    static func norm(_ s: String) -> String {
+        cutTitle(s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)).filter { $0.isLetter || $0.isNumber }
     }
 
     public static func fetch(trackID: String, tokens: Tokens, session: URLSession = .shared) async throws -> TimedLyrics {

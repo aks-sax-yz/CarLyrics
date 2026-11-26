@@ -558,6 +558,8 @@ final class NowPlayingCoordinator: ObservableObject {
     ///   and only at the same length ("spotify-isrc").
     /// - Spotify songs: Apple's word-timed lyrics of the same recording, by ISRC or else by title +
     ///   artist, only at the same length ("apple-twin"), then Spotify's own, line-timed ("spotify").
+    /// - YouTube Music songs: Apple's ("apple-twin"), then Spotify's ("spotify-search"), both by title +
+    ///   artist within a second, so Spotify's lyrics cover them without an Apple Music subscription too.
     /// None when the cache already holds a service's lyrics; a service that had none is skipped.
     private func services(for track: NowPlayingTrack, cached: TimedLyrics?) -> [String] {
         var names: [String] = []
@@ -571,7 +573,9 @@ final class NowPlayingCoordinator: ObservableObject {
             if appleAccount.enabled { names.append("apple-twin") }
             if spotifyLyrics.isConnected, track.catalogID?.isEmpty == false { names.append("spotify") }
         case .youtubeMusic:
-            if appleAccount.enabled { names.append("apple-twin") } // by title + artist, within a second
+            // Both by title + artist, within a second (YouTube gives whole seconds).
+            if appleAccount.enabled { names.append("apple-twin") }
+            if spotifyLyrics.isConnected { names.append("spotify-search") }
         }
         guard let source = cached?.source else { return names }
         // Build 12 cached Apple's lyrics without the lyricOffset fix (no "leadingSilence=" note): once more.
@@ -594,6 +598,8 @@ final class NowPlayingCoordinator: ObservableObject {
                 case "spotify-isrc":
                     guard let isrc = await appleAccount.isrc(songID: track.catalogID ?? "") else { throw SpotifyLyrics.Failure.notFound }
                     fetched = try await spotifyLyrics.lyrics(isrc: isrc, durationMs: track.durationMs)
+                case "spotify-search":
+                    fetched = try await spotifyLyrics.lyrics(title: track.title, artist: track.artist, durationMs: track.durationMs)
                 default: fetched = try await spotifyLyrics.lyrics(trackID: track.catalogID ?? "")
                 }
                 guard lyricsFetchToken == token else { return }
