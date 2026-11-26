@@ -54,14 +54,24 @@ final class AppleMusicAccount: ObservableObject {
 
     /// Word-timed lyrics of a Spotify song's twin on Apple Music (same recording, by ISRC), so
     /// Spotify plays get word sync too. Line-only lyrics don't count: Spotify's own fit its audio.
-    func lyrics(isrc: String, durationMs: Int?) async throws -> TimedLyrics {
+    /// Found by ISRC when Spotify gives one (it dropped them for dev-mode apps in Feb 2026, then said
+    /// it would keep them), else by title + artist; either way only at the same length.
+    func lyrics(twinOf track: NowPlayingTrack) async throws -> TimedLyrics {
         guard enabled, let current = await tokens() else { throw AppleMusicLyrics.Failure.userTokenRejected }
         return try await handled {
-            guard let id = try await AppleMusicLyrics.songID(isrc: isrc, durationMs: durationMs, tokens: current) else {
-                throw AppleMusicLyrics.Failure.notFound // not on Apple Music, or not the same length
+            var id: String?
+            var how = "search"
+            if let isrc = track.isrc, !isrc.isEmpty {
+                id = try await AppleMusicLyrics.songID(isrc: isrc, durationMs: track.durationMs, tokens: current)
+                how = "isrc=\(isrc)"
             }
+            if id == nil {
+                id = try await AppleMusicLyrics.songID(title: track.title, artist: track.artist, durationMs: track.durationMs, tokens: current)
+                how += id == nil ? "" : " search"
+            }
+            guard let id else { throw AppleMusicLyrics.Failure.notFound } // not on Apple Music, or not the same length
             var lyrics = try await AppleMusicLyrics.fetch(songID: id, tokens: current, wordsOnly: true)
-            lyrics.source = (lyrics.source ?? "apple") + " isrc=\(isrc)"
+            lyrics.source = (lyrics.source ?? "apple") + " twin(\(how))"
             return lyrics
         }
     }

@@ -91,6 +91,54 @@ public enum AppleMusicLyrics {
         }
     }
 
+    /// The Apple Music song matching a title + artist at the same length (a Spotify song's twin when
+    /// Spotify doesn't say its ISRC), or nil.
+    public static func songID(title: String, artist: String, durationMs: Int?, tokens: Tokens,
+                              session: URLSession = .shared) async throws -> String? {
+        var comps = URLComponents(string: "https://amp-api.music.apple.com/v1/catalog/\(tokens.storefront)/search")!
+        let firstArtist = artist.split(separator: ",").first.map(String.init) ?? artist
+        comps.queryItems = [.init(name: "term", value: "\(title) \(firstArtist)"), .init(name: "types", value: "songs"),
+                            .init(name: "limit", value: "10")]
+        var r = request(songID: "", tokens: tokens, syllable: false)
+        r.url = comps.url
+        let (data, response) = try await session.data(for: r)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        switch status {
+        case 200: return songID(fromSearch: data, title: title, artist: firstArtist, durationMs: durationMs)
+        case 401: throw Failure.developerTokenRejected
+        case 403: throw Failure.userTokenRejected
+        default: throw Failure.http(status)
+        }
+    }
+
+    /// Same length (to the second), same title (ignoring "(Remastered)"-style suffixes, case, accents)
+    /// and the first artist named.
+    static func songID(fromSearch data: Data, title: String, artist: String, durationMs: Int?) -> String? {
+        struct Doc: Decodable {
+            struct R: Decodable {
+                struct Songs: Decodable {
+                    struct S: Decodable {
+                        struct A: Decodable { var name: String?; var artistName: String?; var durationInMillis: Int? }
+                        var id: String; var attributes: A?
+                    }
+                    var data: [S]
+                }
+                var songs: Songs?
+            }
+            var results: R
+        }
+        func norm(_ s: String) -> String {
+            var t = s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            for cut in [" (", " [", " - "] { if let r = t.range(of: cut) { t = String(t[..<r.lowerBound]) } }
+            return t.filter { $0.isLetter || $0.isNumber }
+        }
+        guard let durationMs, let songs = (try? JSONDecoder().decode(Doc.self, from: data))?.results.songs?.data else { return nil }
+        return songs.first { s in
+            guard let a = s.attributes, let d = a.durationInMillis, abs(d - durationMs) <= durationTolerance else { return false }
+            return norm(a.name ?? "") == norm(title) && norm(a.artistName ?? "").contains(norm(artist))
+        }?.id
+    }
+
     /// A catalog song's ISRC (to find its twin on Spotify when Apple has no lyrics).
     public static func isrc(songID: String, tokens: Tokens, session: URLSession = .shared) async throws -> String? {
         var r = request(songID: "", tokens: tokens, syllable: false)

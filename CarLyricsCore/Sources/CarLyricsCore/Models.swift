@@ -18,9 +18,11 @@ public struct NowPlayingTrack: Equatable, Codable, Sendable {
     /// The recording's ISRC (Spotify reports it): finds the same recording on Apple Music, whose
     /// word timing then fits Spotify's audio too.
     public var isrc: String? = nil
+    /// Album art to download (Spotify; Apple Music's comes from MediaPlayer).
+    public var artworkURL: String? = nil
 
     public init(title: String, artist: String, album: String? = nil, durationMs: Int? = nil, source: Source,
-                catalogID: String? = nil, isrc: String? = nil) {
+                catalogID: String? = nil, isrc: String? = nil, artworkURL: String? = nil) {
         self.title = title
         self.artist = artist
         self.album = album
@@ -28,6 +30,7 @@ public struct NowPlayingTrack: Equatable, Codable, Sendable {
         self.source = source
         self.catalogID = catalogID
         self.isrc = isrc
+        self.artworkURL = artworkURL
     }
 
     /// Stable identity for cache keys and change detection. Deliberately ignores `source`
@@ -115,6 +118,14 @@ public struct TimedLyrics: Equatable, Codable, Sendable {
     }
 
     public var isEmpty: Bool { lines.isEmpty }
+
+    /// Apple's offset for the Dolby Atmos ("spatial") recording, from the TTML metadata AppleTTML
+    /// notes in `source` ("lyricOffset[spatial]=1115ms"). Positive = lyrics belong later. Blinding
+    /// Lights: +1115ms, so on Atmos its stereo-timed words were a second early (Akshat, 2026-11-25).
+    public var spatialLyricOffsetMs: Int? {
+        guard let source, let r = source.range(of: #"lyricOffset\[spatial\]=(-?\d+)ms"#, options: .regularExpression) else { return nil }
+        return Int(source[r].dropFirst("lyricOffset[spatial]=".count).dropLast(2))
+    }
 }
 
 extension String {

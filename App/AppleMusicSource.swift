@@ -25,8 +25,12 @@ final class AppleMusicSource {
     /// Average colour of the now-playing artwork (nil without art), for the album-art background.
     /// ponytail: a plain average can come out muddy; a dominant colour (CIKMeans) is the upgrade.
     func artworkColor() -> LyricsActivityAttributes.RGB? {
-        guard let image = player.nowPlayingItem?.artwork?.image(at: CGSize(width: 40, height: 40)),
-              let input = CIImage(image: image) else { return nil }
+        player.nowPlayingItem?.artwork?.image(at: CGSize(width: 40, height: 40)).flatMap(Self.averageColor)
+    }
+
+    /// Average colour of an image (Apple Music's art here, Spotify's downloaded art in the coordinator).
+    static func averageColor(_ image: UIImage) -> LyricsActivityAttributes.RGB? {
+        guard let input = CIImage(image: image) else { return nil }
         let average = input.applyingFilter("CIAreaAverage", parameters: [kCIInputExtentKey: CIVector(cgRect: input.extent)])
         var pixel = [UInt8](repeating: 0, count: 4)
         CIContext().render(average, toBitmap: &pixel, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),

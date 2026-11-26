@@ -160,7 +160,11 @@ public struct SpotifyClient: Sendable {
     struct CurrentlyPlaying: Codable {
         struct Item: Codable {
             struct Artist: Codable { var name: String }
-            struct Album: Codable { var name: String? }
+            struct Album: Codable {
+                struct Image: Codable { var url: String; var width: Int? }
+                var name: String?
+                var images: [Image]?
+            }
             struct IDs: Codable { var isrc: String? }
             var id: String?
             var external_ids: IDs?
@@ -176,10 +180,14 @@ public struct SpotifyClient: Sendable {
 
     /// Fetch the currently-playing track. Refreshes tokens caller-side; pass a valid access
     /// token. Throws `.notPlaying` on 204, `.rateLimited` on 429, `.unauthorized` on 401.
-    public func currentlyPlaying(accessToken: String, now: Date = Date()) async throws -> PlaybackState {
+    public func currentlyPlaying(accessToken: String) async throws -> PlaybackState {
         var req = URLRequest(url: apiBase.appendingPathComponent("me/player/currently-playing"))
         req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let sent = Date()
         let (data, resp) = try await session.data(for: req)
+        // The position is Spotify's at roughly the middle of the round trip, not when the reply landed
+        // (on mobile data that's often 0.3s+ later).
+        let now = sent.addingTimeInterval(Date().timeIntervalSince(sent) / 2)
         guard let http = resp as? HTTPURLResponse else { throw SpotifyError.badResponse(status: -1) }
         switch http.statusCode {
         case 204: throw SpotifyError.notPlaying
@@ -204,9 +212,16 @@ public struct SpotifyClient: Sendable {
             durationMs: item.duration_ms,
             source: .spotify,
             catalogID: item.id,
-            isrc: item.external_ids?.isrc
+            isrc: item.external_ids?.isrc,
+            artworkURL: artwork(item.album?.images ?? [])
         )
         return PlaybackState(track: track, positionMs: cp.progress_ms ?? 0, isPlaying: cp.is_playing, sampledAt: now)
+    }
+
+    /// The smallest image at least 300px wide (the backdrop is blurred, the header is small), else the largest.
+    static func artwork(_ images: [CurrentlyPlaying.Item.Album.Image]) -> String? {
+        let sorted = images.sorted { ($0.width ?? 0) < ($1.width ?? 0) }
+        return (sorted.first { ($0.width ?? 0) >= 300 } ?? sorted.last)?.url
     }
 
     static func formEncode(_ s: String) -> String {

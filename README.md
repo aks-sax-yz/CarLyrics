@@ -28,8 +28,14 @@ widgets page for every vehicle. This app:
      presents as Safari so Google sign-in works; Apple pages there are kept off passkeys, which
      can't work in an app's web view). The page's own requests carry the tokens; a script reports them.
    - **Apple Music songs Apple has no lyrics for:** Spotify's, for the same recording (ISRC + length).
-   - Apple's TTML `<audio lyricOffset>` (stereo) is added to every time, as Apple's player does;
-     `leadingSilence` and the Atmos offset are logged with each song (`lyrics "…" apple …`).
+   - Apple's TTML `<audio lyricOffset>` (stereo) is added to every time, as Apple's player does.
+     The Dolby Atmos ("spatial") offset applies when Apple Music is likely playing Atmos: its default
+     on the iPhone's speakers and AirPods/Beats, never in the car (Blinding Lights: +1115ms, so its
+     words were a second early on the speaker). Re-checked on every route change (`lyrics timing … atmos=`).
+   - Spotify songs that Spotify doesn't give an ISRC for are matched on Apple Music by title + first
+     artist, still only at the same length. Spotify's album art is downloaded for the backdrop and the
+     Album background. Spotify's position wobbles ±0.6–1.3s between polls, so the song start is the
+     median of the last 5 polls (timed at the middle of each request); a jump over 2.5s is a seek.
    - Both are **private and unofficial** (likely against Apple's/Spotify's terms; personal use).
      Any failure falls back to LRCLIB; a song a service has no lyrics for is remembered.
 3. **Runs the sync engine** every second to find the current line from the playback position.

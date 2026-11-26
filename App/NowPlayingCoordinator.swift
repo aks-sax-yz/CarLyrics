@@ -175,6 +175,8 @@ final class NowPlayingCoordinator: ObservableObject {
     private var missCount = 0
     private var lastSpotifyPoll: Date?
     private var spotifyAnchor: PlaybackState?
+    private var spotifyStarts: [Date] = []
+    private var spotifyStartsTrack: String?
     private var loopTask: Task<Void, Never>?
     private var observingRoutes = false
     private var lyricsFetchToken = UUID()
@@ -369,6 +371,7 @@ final class NowPlayingCoordinator: ObservableObject {
         )
         if connected != isCarPlayConnected { EventLog.log("carplay \(connected ? "connected" : "disconnected")") }
         if !connected { wordsOff = false } // the safety net lasts one drive
+        if let storedLyrics, let track { setLyrics(storedLyrics, for: track) } // speaker ↔ car: Atmos or stereo
         isCarPlayConnected = connected
         UserDefaults.standard.set(connected, forKey: Self.carPlayKey)
         if shouldEnd {
@@ -406,6 +409,7 @@ final class NowPlayingCoordinator: ObservableObject {
             currentSongHasOwnOffset = songOffsets[playback.track.identityKey] != nil
             userOffsetMs = songOffsets[playback.track.identityKey] ?? defaultOffsetMs
             albumColor = playback.track.source == .appleMusic ? appleMusic.artworkColor() : nil
+            if playback.track.source == .spotify { loadSpotifyArtwork(for: playback.track) }
             artwork = playback.track.source == .appleMusic ? appleMusic.artworkImage() : nil
             artworkBackdrop = Self.backdrop(from: artwork)
             #if targetEnvironment(simulator)
@@ -452,7 +456,14 @@ final class NowPlayingCoordinator: ObservableObject {
         }
         lastSpotifyPoll = now
         do {
-            let state = try await spotify.poll()
+            var state = try await spotify.poll()
+            // Spotify's reported position wobbles ±0.6–1.3s between polls (2026-11-25 log): a median of
+            // the last few start estimates keeps the lyrics still; a jump over 2.5s is a seek, taken at once.
+            let start = state.sampledAt.addingTimeInterval(-Double(state.positionMs) / 1000)
+            if !state.isPlaying || state.track.identityKey != spotifyStartsTrack { spotifyStarts = [] }
+            spotifyStartsTrack = state.track.identityKey
+            let smoothed = Self.smoothedStart(&spotifyStarts, adding: start)
+            if state.isPlaying { state.sampledAt = smoothed.addingTimeInterval(Double(state.positionMs) / 1000) }
             spotifyAnchor = state
             return state
         } catch SpotifyClient.SpotifyError.notPlaying {
@@ -487,7 +498,7 @@ final class NowPlayingCoordinator: ObservableObject {
         let cached = store.load(for: track)
         if let cached {
             // The cache keeps the original script; romanize on load so converter fixes apply.
-            lyrics = Transliterator.romanized(cached)
+            setLyrics(cached, for: track)
             status = cached.isSynced ? "Synced lyrics (cached)" : "Plain lyrics (cached)"
             // A cached LRCLIB copy is upgraded once, in the background, when a service can do better.
             guard !services(for: track, cached: cached).isEmpty else { return }
@@ -501,8 +512,8 @@ final class NowPlayingCoordinator: ObservableObject {
     /// The services to ask, in order, before LRCLIB:
     /// - Apple Music songs: Apple's lyrics ("apple"), then Spotify's for the same recording, by ISRC
     ///   and only at the same length ("spotify-isrc").
-    /// - Spotify songs: Apple's word-timed lyrics of the same recording, by ISRC ("apple-isrc"), then
-    ///   Spotify's own, line-timed ("spotify").
+    /// - Spotify songs: Apple's word-timed lyrics of the same recording, by ISRC or else by title +
+    ///   artist, only at the same length ("apple-twin"), then Spotify's own, line-timed ("spotify").
     /// None when the cache already holds a service's lyrics; a service that had none is skipped.
     private func services(for track: NowPlayingTrack, cached: TimedLyrics?) -> [String] {
         var names: [String] = []
@@ -513,12 +524,14 @@ final class NowPlayingCoordinator: ObservableObject {
                 if spotifyLyrics.isConnected { names.append("spotify-isrc") }
             }
         case .spotify:
-            if appleAccount.enabled, track.isrc?.isEmpty == false { names.append("apple-isrc") }
+            if appleAccount.enabled { names.append("apple-twin") }
             if spotifyLyrics.isConnected, track.catalogID?.isEmpty == false { names.append("spotify") }
         }
         guard let source = cached?.source else { return names }
         // Build 12 cached Apple's lyrics without the lyricOffset fix (no "leadingSilence=" note): once more.
         if source.hasPrefix("apple"), !source.contains("leadingSilence=") { return names.filter { $0.hasPrefix("apple") } }
+        // A Spotify song kept with Spotify's line-timed lyrics: try once for Apple's word timing.
+        if source.hasPrefix("spotify"), names.contains("apple-twin"), !source.contains("apple-twin=none") { return ["apple-twin"] }
         if source.hasPrefix("apple") || source.hasPrefix("spotify") { return [] }
         return names.filter { !source.contains(" \($0)=none") }
     }
@@ -531,7 +544,7 @@ final class NowPlayingCoordinator: ObservableObject {
                 var fetched: TimedLyrics
                 switch name {
                 case "apple": fetched = try await appleAccount.lyrics(songID: track.catalogID ?? "")
-                case "apple-isrc": fetched = try await appleAccount.lyrics(isrc: track.isrc ?? "", durationMs: track.durationMs)
+                case "apple-twin": fetched = try await appleAccount.lyrics(twinOf: track)
                 case "spotify-isrc":
                     guard let isrc = await appleAccount.isrc(songID: track.catalogID ?? "") else { throw SpotifyLyrics.Failure.notFound }
                     fetched = try await spotifyLyrics.lyrics(isrc: isrc, durationMs: track.durationMs)
@@ -575,11 +588,54 @@ final class NowPlayingCoordinator: ObservableObject {
     }
 
     private func show(_ fetched: TimedLyrics, for track: NowPlayingTrack) {
-        let display = Transliterator.romanized(fetched)
         EventLog.log("lyrics \"\(track.title)\" \(fetched.source ?? "?") lines=\(fetched.lines.count) synced=\(fetched.isSynced) words=\(fetched.lines.contains { $0.words != nil }) offset=\(fetched.offsetMs)ms")
-        lyrics = display
+        setLyrics(fetched, for: track)
         store.save(fetched, for: track) // original script, so romanizer fixes reach cached songs
-        status = display.isSynced ? "Synced lyrics" : "Plain lyrics (no timing)"
+        status = fetched.isSynced ? "Synced lyrics" : "Plain lyrics (no timing)"
+    }
+
+    /// The lyrics as stored (original script, no Atmos shift), to re-derive `lyrics` when the route changes.
+    private var storedLyrics: TimedLyrics?
+
+    /// Shows `stored`: romanized, and shifted by Apple's Dolby Atmos offset when Apple Music is likely
+    /// playing the Atmos version (it does on the iPhone's speakers and AirPods/Beats by default, never
+    /// in the car), since the TTML's times are for the stereo recording.
+    private func setLyrics(_ stored: TimedLyrics, for track: NowPlayingTrack) {
+        storedLyrics = stored
+        var display = Transliterator.romanized(stored)
+        if track.source == .appleMusic, let spatial = stored.spatialLyricOffsetMs, Self.atmosLikely {
+            display.offsetMs -= spatial // offsetMs > 0 = sooner; Apple's offset > 0 = later
+        }
+        if display.offsetMs != lyrics?.offsetMs || display.lines != lyrics?.lines {
+            EventLog.log("lyrics timing \"\(track.title)\" atmos=\(Self.atmosLikely) shift=\(display.offsetMs)ms")
+        }
+        lyrics = display
+        refreshLineDates()
+    }
+
+    /// Apple Music's default ("Automatic") plays Dolby Atmos on the iPhone's speakers and on
+    /// AirPods/Beats; other headphones, CarPlay and AirPlay get stereo.
+    nonisolated static var atmosLikely: Bool {
+        guard let out = AVAudioSession.sharedInstance().currentRoute.outputs.first else { return false }
+        switch out.portType {
+        case .builtInSpeaker: return true
+        case .bluetoothA2DP, .bluetoothLE: return ["AirPods", "Beats"].contains { out.portName.localizedCaseInsensitiveContains($0) }
+        default: return false
+        }
+    }
+
+    /// Spotify's album art (Apple Music's comes from MediaPlayer): the lyrics screen's backdrop, and the
+    /// Album background's colour and blurred art on the lock screen and CarPlay.
+    private func loadSpotifyArtwork(for song: NowPlayingTrack) {
+        guard let url = song.artworkURL.flatMap(URL.init(string:)) else { return }
+        Task { [weak self] in
+            guard let (data, _) = try? await URLSession.shared.data(from: url), let image = UIImage(data: data),
+                  let self, self.track?.identityKey == song.identityKey else { return }
+            artwork = image
+            artworkBackdrop = Self.backdrop(from: image)
+            albumColor = AppleMusicSource.averageColor(image)
+            saveActivityArt(artworkBackdrop)
+        }
     }
 
     // MARK: Sync + Live Activity
@@ -798,6 +854,15 @@ final class NowPlayingCoordinator: ObservableObject {
     /// Activity. It was 1.5s, but the clocked lyric window schedules every line from this anchor,
     /// so a stale first reading (Apple Music still buffering at song start) stuck for the whole song
     /// as a per-song delay of up to 1.5s. `anchor moved` lines in events.log show how often it corrects.
+    /// Median of the last 5 song-start estimates; a new one more than 2.5s off the median is a seek and
+    /// starts over.
+    nonisolated static func smoothedStart(_ history: inout [Date], adding start: Date) -> Date {
+        func median(_ d: [Date]) -> Date { d.sorted()[d.count / 2] }
+        if !history.isEmpty, abs(start.timeIntervalSince(median(history))) > 2.5 { history = [] }
+        history = Array((history + [start]).suffix(5))
+        return median(history)
+    }
+
     nonisolated static func steadySongStart(previous: Date?, candidate: Date) -> Date {
         if let previous, abs(previous.timeIntervalSince(candidate)) < 0.25 { return previous }
         return candidate

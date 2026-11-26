@@ -66,6 +66,28 @@ final class ServiceLyricsTests: XCTestCase {
         XCTAssertEqual(track.isrc, "USUG11904206")
     }
 
+    func testAppleTwinBySearchNeedsTitleArtistAndLength() {
+        let body = Data(#"{"results":{"songs":{"data":[{"id":"live","attributes":{"name":"Blinding Lights (Live)","artistName":"The Weeknd","durationInMillis":230000}},{"id":"cover","attributes":{"name":"Blinding Lights","artistName":"Someone Else","durationInMillis":200040}},{"id":"real","attributes":{"name":"Blinding Lights","artistName":"The Weeknd","durationInMillis":200040}}]}}}"#.utf8)
+        XCTAssertEqual(AppleMusicLyrics.songID(fromSearch: body, title: "Blinding Lights", artist: "The Weeknd", durationMs: 200_373), "real")
+        XCTAssertNil(AppleMusicLyrics.songID(fromSearch: body, title: "Blinding Lights", artist: "The Weeknd", durationMs: 203_000))
+        XCTAssertEqual(AppleMusicLyrics.songID(fromSearch: body, title: "Blinding Lights - 2020 Remaster", artist: "the weeknd", durationMs: 200_000), "real")
+    }
+
+    func testSpatialOffsetFromSource() {
+        var l = TimedLyrics(lines: [], isSynced: true)
+        l.source = "apple syllable id=1 leadingSilence=0ms lyricOffset[spatial]=1115ms lines=35"
+        XCTAssertEqual(l.spatialLyricOffsetMs, 1115)
+        l.source = "apple syllable id=1 lyricOffset[spatial]=-271ms"
+        XCTAssertEqual(l.spatialLyricOffsetMs, -271)
+        l.source = "lrclib get"
+        XCTAssertNil(l.spatialLyricOffsetMs)
+    }
+
+    func testSpotifyAlbumArtPicksAboutThreeHundred() throws {
+        let body = Data(#"{"is_playing":true,"progress_ms":1,"item":{"name":"S","artists":[{"name":"A"}],"album":{"name":"Al","images":[{"url":"big","width":640},{"url":"mid","width":300},{"url":"tiny","width":64}]}}}"#.utf8)
+        XCTAssertEqual(try SpotifyClient.decodePlayback(body).track.artworkURL, "mid")
+    }
+
     func testSpotifyTrackForISRCOnlyWhenLengthMatches() {
         let body = Data(#"{"tracks":{"items":[{"id":"albumEdit","duration_ms":215000},{"id":"single","duration_ms":200123}]}}"#.utf8)
         XCTAssertEqual(SpotifyLyrics.trackID(fromSearch: body, durationMs: 200_000), "single")
