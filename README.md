@@ -2,7 +2,7 @@
 
 Detects the song playing on your iPhone and shows time-synced lyrics on the **CarPlay**
 screen — a clone of the "Car Lyrics" / "Dynamic Lyrics" App Store category, built for
-personal use. Supports **Apple Music** and **Spotify**.
+personal use. Supports **Apple Music**, **Spotify** and **YouTube Music**.
 
 ## How it actually works (the important part)
 
@@ -12,8 +12,21 @@ app. Instead, on **iOS 26**, WidgetKit widgets and **Live Activities** appear on
 widgets page for every vehicle. This app:
 
 1. **Detects the track** — Apple Music via `MediaPlayer` (`systemMusicPlayer`, on-device);
-   Spotify via the official Web API (`/me/player/currently-playing`, OAuth PKCE polling).
+   Spotify via the official Web API (`/me/player/currently-playing`, OAuth PKCE polling);
+   YouTube Music from its history plus iOS's playback signals (below).
    *(No system-wide "now playing" API exists for App Store apps — detection is per-source.)*
+   - **YouTube Music** has no API, and iOS's now-playing reads (MediaRemote) need Apple's own
+     entitlement: on the phone every read comes back empty (tested 2026-11-26, iOS 27.2). What does
+     work: MediaRemote's Darwin notifications (`nowPlayingApplicationIsPlayingDidChange`,
+     `lockScreenControlsDidChange`) mark the exact moment a song starts, skips, follows on, pauses or
+     resumes; the newest entry in YouTube Music's history (InnerTube `FEmusic_history` with the web
+     login's cookies, Settings › YouTube Music) names the song 1–20 s later; MediaRemote's seek command
+     reaches the now-playing app, so a tapped line jumps YouTube Music. A new song is timed from the
+     signal before it reached history; history's flips back to recent songs are ignored. A **drag inside
+     YouTube Music** never reveals where it went: the lyrics then show unsynced with *Tap the line being
+     sung* (the tap jumps the song there). Auto only looks at YouTube Music when Apple Music and Spotify
+     aren't playing, and it can't tell apps apart: another app's audio (a podcast) would look like the
+     last YouTube Music song resuming.
 2. **Fetches lyrics**, the song's own service first, then [LRCLIB](https://lrclib.net)
    (free, no key, LRC synced lyrics), and caches them on disk:
    - **Apple Music songs:** Apple's own word-timed lyrics (the TTML music.apple.com's web player
@@ -39,6 +52,9 @@ widgets page for every vehicle. This app:
    - Both are **private and unofficial** (likely against Apple's/Spotify's terms; personal use).
      Any failure falls back to LRCLIB; a song a service has no lyrics for is remembered.
 3. **Runs the sync engine** every second to find the current line from the playback position.
+   Tapping a line jumps the song there: Apple Music (MediaPlayer), Spotify (Web API seek; Premium, and
+   the `user-modify-playback-state` permission, so older logins tap *Reconnect Spotify*), YouTube Music
+   (MediaRemote's seek command).
 4. **Pushes a Live Activity** (`ActivityKit`) whose small presentation renders on CarPlay.
 
 ### The sync ceiling (shared by every app in this category)

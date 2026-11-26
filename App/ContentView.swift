@@ -28,7 +28,20 @@ struct ContentView: View {
             // An overlay, not a safeAreaInset: the lyrics scroll under an inset, and the line beneath
             // the pill took its taps (as tap-to-seek) instead of the buttons.
             .overlay(alignment: .bottom) {
-                if coordinator.lyrics?.isSynced == true { SyncPill().padding(.bottom, 8) }
+                if coordinator.lyrics?.isSynced == true {
+                    VStack(spacing: 10) {
+                        if coordinator.positionUnknown {
+                            // YouTube Music after a drag (iOS doesn't say where to): a tap jumps the song
+                            // to that line, and the lyrics are in sync again.
+                            Label("Tap the line being sung", systemImage: "hand.tap")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+                                .background(.ultraThinMaterial, in: Capsule())
+                        }
+                        SyncPill()
+                    }
+                    .padding(.bottom, 8)
+                }
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
         }
@@ -39,7 +52,7 @@ struct ContentView: View {
             ContentUnavailableView {
                 Label(coordinator.status == "Stopped" ? "Stopped" : "Nothing Playing", systemImage: "music.note")
             } description: {
-                Text("Play a song in Apple Music. Its lyrics appear here, on the Lock Screen and on CarPlay.")
+                Text("Play a song in Apple Music, Spotify or YouTube Music. Its lyrics appear here, on the Lock Screen and on CarPlay.")
             }
         } else if let lyrics = coordinator.lyrics, !lyrics.isEmpty {
             LyricsList(lyrics: lyrics)

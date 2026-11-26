@@ -86,13 +86,12 @@ struct LyricsSmallView: View {
                         .lineLimit(1)
                     NextLine(lines: parts, fallback: state.nextLine, style: style)
                         .font(.lyric(small))
-                        .foregroundStyle(.secondary)
+                        .opacity(NextLine.opacity)
                         .lineLimit(1)
                 }
                 .overlay(alignment: .topLeading) {
                     if style != .wipe && !lite && !parts.isEmpty {
-                        LineHop(lines: parts, size: (big + small) / 2)
-                            .offset(y: (LyricFit.font(big).lineHeight + 2) / 2)
+                        LineHop(lines: parts, big: big, small: small)
                     }
                 }
             }
@@ -163,7 +162,7 @@ struct LyricsLockScreenView: View {
                             .lineLimit(rows)
                         Text(lines.count > 1 ? lines[1].text : "")
                             .font(.system(size: 17))
-                            .foregroundStyle(.secondary)
+                            .opacity(NextLine.opacity)
                             .lineLimit(2)
                     }
                     .id(current.at)
@@ -177,7 +176,7 @@ struct LyricsLockScreenView: View {
                             .lineLimit(rows)
                         NextLine(lines: parts, fallback: state.nextLine, style: style)
                             .font(.system(size: 17))
-                            .foregroundStyle(.secondary)
+                            .opacity(NextLine.opacity)
                             .lineLimit(2)
                     }
                 }
@@ -274,7 +273,7 @@ struct ClockedText: View {
                 .contentTransition(.interpolate)
         } else {
             // Wipe sweeps the new line in left → right. Slide and Karaoke cut: the old line goes at the
-            // change, the new one lands `LineHop.time` later, after its halfway frame (LineHop).
+            // change, the new one lands `LineHop.time` later, after its slide frames (LineHop).
             let wipe = style == .wipe
             ZStack(alignment: .leading) {
                 ForEach(lines.indices, id: \.self) { i in
@@ -282,12 +281,13 @@ struct ClockedText: View {
                         .mask {
                             if i == 0 && !revealFirst { Color.black }
                             else if wipe { Step(at: lines[i].at, duration: 0.4) }
-                            else { Step(at: lines[i].at.addingTimeInterval(LineHop.time), duration: 0.02) }
+                            else { Step(at: lines[i].at.addingTimeInterval(LineHop.time), duration: 0.005) }
                         }
                         .mask {
                             // Hidden once the next line has come in.
                             if i + 1 < lines.count {
-                                Step(at: lines[i + 1].at, duration: wipe ? 0.4 : 0.02, inverted: true)
+                                // A cut takes 5ms: at 20ms a 60fps frame often caught it half done.
+                                Step(at: lines[i + 1].at, duration: wipe ? 0.4 : 0.005, inverted: true)
                             } else { Color.black }
                         }
                 }
@@ -353,6 +353,8 @@ struct ClockedText: View {
 /// The dimmed read-ahead line: during line i it shows line i+1 (nothing after the last). Same
 /// transition as the current line, except karaoke, which only makes sense on the line being sung.
 struct NextLine: View {
+    /// Darker than the system's secondary grey (~60%), so the line being sung stands out (Akshat, 2026-11-26).
+    static let opacity = 0.45
     let lines: [LyricsActivityAttributes.TimedLine]
     let fallback: String?
     let style: LyricsActivityAttributes.Transition
@@ -367,33 +369,57 @@ struct NextLine: View {
     }
 }
 
-/// The slide on CarPlay, flipbook style. Only timers animate in a Live Activity, so nothing can move;
-/// but the next line is already drawn small in the lower row and lands big in the top row, so one
-/// copy halfway between them, mid-size, shown for `time` at each change, makes it read as moving
-/// up (lower → middle → top). One copy and two timers per line, not a whole stop-motion.
+/// The slide on CarPlay, stop-motion. Only timers animate in a Live Activity (a custom progress style
+/// gets no live value there), so nothing can move: instead the line is drawn `frames` times between
+/// the lower row (small) and the top row (big), each copy shown for its slice of `time`, easing out
+/// like Apple Music's. Both rows are empty meanwhile (ClockedText and NextLine switch at `time`), so
+/// one copy shows at any instant. A single halfway copy read as a jump, not a slide (Akshat, 2026-11-26).
+/// Each copy is a Text and two timers, so only the next `ahead` changes get frames: the whole window's
+/// worth cost too much CPU on 2026-11-16; later ones cut until the next push moves the window.
 struct LineHop: View {
     let lines: [LyricsActivityAttributes.TimedLine]
-    let size: CGFloat
-    static let time = 0.12
+    let big: CGFloat
+    let small: CGFloat
+    static let time = 0.3
+    static let frames = 5
+    static let ahead = 6
 
     var body: some View {
+        let rowStep = LyricFit.font(big).lineHeight + 2 // VStack spacing 2 between the rows
+        let slice = Self.time / Double(Self.frames)
         ZStack(alignment: .topLeading) {
-            ForEach(lines.indices, id: \.self) { i in
-                Text(lines[i].text)
-                    .font(.lyric(size))
-                    .lineLimit(1)
-                    .opacity(0.75)
-                    .mask { Step(at: lines[i].at, duration: 0.02) }
-                    .mask { Step(at: lines[i].at.addingTimeInterval(Self.time), duration: 0.02, inverted: true) }
+            ForEach(Array(lines.prefix(Self.ahead).indices), id: \.self) { i in
+                ForEach(1...Self.frames, id: \.self) { k in
+                    let p = Self.progress(k)
+                    let from = lines[i].at.addingTimeInterval(Double(k - 1) * slice)
+                    // Full width like the rows: a timer bar's fill stops short of its frame's ends, which
+                    // cut a tight frame's last letter. Masked first, then moved, so the mask moves with it.
+                    Text(lines[i].text)
+                        .font(.lyric(small + (big - small) * p))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .opacity(NextLine.opacity + (1 - NextLine.opacity) * p)
+                        .mask { Step(at: from, duration: 0.005) }
+                        .mask { Step(at: from.addingTimeInterval(slice), duration: 0.005, inverted: true) }
+                        .offset(y: rowStep * (1 - p))
+                }
             }
         }
+    }
+
+    /// How far frame k (1…frames) is from the lower row (0) to the top row (1), easing out.
+    static func progress(_ k: Int) -> Double {
+        let t = Double(k) / Double(frames + 1)
+        return 1 - (1 - t) * (1 - t)
     }
 }
 
 /// A mask revealed left → right from `at` over `duration` (`inverted`: hidden left → right instead):
 /// a timer ProgressView stretched over the whole text. Its grey track would
-/// leak every other line as a faint ghost, so it's flattened onto black and contrast-boosted: the
-/// white fill stays white (opaque), the track drops to black (clear).
+/// leak every other line as a faint ghost, so it's flattened onto black, darkened and contrast-boosted:
+/// the white fill stays white (opaque), the track drops to black (clear). iOS 26 draws the track
+/// lighter than the old contrast(3) could crush: every hidden line leaked through on CarPlay, the
+/// garbled overlap in Akshat's 2026-11-26 photo (reproduced at 60fps in a simulator recording).
 struct Step: View {
     let at: Date
     var duration: TimeInterval = 0.1
@@ -410,7 +436,7 @@ struct Step: View {
                 .scaleEffect(x: 1.1, y: 60)
         }
         .compositingGroup()
-        .contrast(3)
+        .brightness(-0.3).contrast(12) // the track to clear, whatever grey iOS draws it in (see Step)
         Group {
             if inverted { fill.colorInvert() } else { fill }
         }
@@ -446,7 +472,7 @@ struct WordMask: View {
                 }
             }
             .compositingGroup()
-            .contrast(3)
+            .brightness(-0.3).contrast(12) // the track to clear, whatever grey iOS draws it in (see Step)
             .luminanceToAlpha()
         }
     }

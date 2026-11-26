@@ -5,6 +5,7 @@ public struct NowPlayingTrack: Equatable, Codable, Sendable {
     public enum Source: String, Codable, Sendable {
         case appleMusic
         case spotify
+        case youtubeMusic
     }
 
     public var title: String
@@ -12,13 +13,13 @@ public struct NowPlayingTrack: Equatable, Codable, Sendable {
     public var album: String?
     public var durationMs: Int?
     public var source: Source
-    /// The service's own ID: Apple Music's catalog ID (`playbackStoreID`, nil for local files) or
-    /// Spotify's track ID. Asks that service for its lyrics. Not part of `identityKey`.
+    /// The service's own ID: Apple Music's catalog ID (`playbackStoreID`, nil for local files),
+    /// Spotify's track ID or YouTube's video ID. Asks that service for its lyrics. Not part of `identityKey`.
     public var catalogID: String? = nil
     /// The recording's ISRC (Spotify reports it): finds the same recording on Apple Music, whose
     /// word timing then fits Spotify's audio too.
     public var isrc: String? = nil
-    /// Album art to download (Spotify; Apple Music's comes from MediaPlayer).
+    /// Album art to download (Spotify, YouTube Music; Apple Music's comes from MediaPlayer).
     public var artworkURL: String? = nil
 
     public init(title: String, artist: String, album: String? = nil, durationMs: Int? = nil, source: Source,

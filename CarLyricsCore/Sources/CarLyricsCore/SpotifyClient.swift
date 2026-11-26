@@ -15,7 +15,8 @@ public struct SpotifyAuth: Sendable {
     public init(
         clientID: String,
         redirectURI: String,
-        scopes: [String] = ["user-read-currently-playing", "user-read-playback-state"]
+        // modify-playback-state: tapping a lyric line jumps Spotify there (Premium only).
+        scopes: [String] = ["user-read-currently-playing", "user-read-playback-state", "user-modify-playback-state"]
     ) {
         self.clientID = clientID
         self.redirectURI = redirectURI
@@ -68,6 +69,11 @@ public struct SpotifyTokens: Codable, Sendable, Equatable {
     public var accessToken: String
     public var refreshToken: String?
     public var expiresAt: Date
+    /// The scopes Spotify granted (space-separated); nil in logins saved before 2026-11-26.
+    public var scope: String? = nil
+
+    /// Whether this login may move playback (tap a line to jump there).
+    public var canSeek: Bool { scope?.split(separator: " ").contains("user-modify-playback-state") == true }
 
     public func isExpired(now: Date, leeway: TimeInterval = 60) -> Bool {
         now.addingTimeInterval(leeway) >= expiresAt
@@ -113,6 +119,7 @@ public struct SpotifyClient: Sendable {
         var access_token: String
         var refresh_token: String?
         var expires_in: Int
+        var scope: String?
     }
 
     public func exchangeCode(_ code: String, verifier: String, now: Date = Date()) async throws -> SpotifyTokens {
@@ -124,7 +131,8 @@ public struct SpotifyClient: Sendable {
             "code_verifier": verifier,
         ]
         let tr = try await postToken(form: form)
-        return SpotifyTokens(accessToken: tr.access_token, refreshToken: tr.refresh_token, expiresAt: now.addingTimeInterval(TimeInterval(tr.expires_in)))
+        return SpotifyTokens(accessToken: tr.access_token, refreshToken: tr.refresh_token,
+                             expiresAt: now.addingTimeInterval(TimeInterval(tr.expires_in)), scope: tr.scope)
     }
 
     public func refresh(_ tokens: SpotifyTokens, now: Date = Date()) async throws -> SpotifyTokens {
@@ -136,7 +144,8 @@ public struct SpotifyClient: Sendable {
         ]
         let tr = try await postToken(form: form)
         // Spotify may omit a new refresh token; keep the old one if so.
-        return SpotifyTokens(accessToken: tr.access_token, refreshToken: tr.refresh_token ?? refresh, expiresAt: now.addingTimeInterval(TimeInterval(tr.expires_in)))
+        return SpotifyTokens(accessToken: tr.access_token, refreshToken: tr.refresh_token ?? refresh,
+                             expiresAt: now.addingTimeInterval(TimeInterval(tr.expires_in)), scope: tr.scope ?? tokens.scope)
     }
 
     private func postToken(form: [String: String]) async throws -> TokenResponse {
@@ -199,6 +208,21 @@ public struct SpotifyClient: Sendable {
         default: throw SpotifyError.badResponse(status: http.statusCode)
         }
         return try Self.decodePlayback(data, now: now)
+    }
+
+    /// Jump playback to `positionMs` (Premium, `user-modify-playback-state`). Spotify answers 204 or 200.
+    public func seek(positionMs: Int, accessToken: String) async throws {
+        var comps = URLComponents(url: apiBase.appendingPathComponent("me/player/seek"), resolvingAgainstBaseURL: false)!
+        comps.queryItems = [.init(name: "position_ms", value: "\(max(0, positionMs))")]
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = "PUT"
+        req.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        let (_, resp) = try await session.data(for: req)
+        switch (resp as? HTTPURLResponse)?.statusCode ?? -1 {
+        case 200, 202, 204: return
+        case 401: throw SpotifyError.unauthorized
+        case let status: throw SpotifyError.badResponse(status: status)
+        }
     }
 
     /// Decode a currently-playing payload into a `PlaybackState`. Exposed for testing.

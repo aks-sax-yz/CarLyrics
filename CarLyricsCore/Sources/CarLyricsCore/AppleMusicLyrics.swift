@@ -93,8 +93,9 @@ public enum AppleMusicLyrics {
 
     /// The Apple Music song matching a title + artist at the same length (a Spotify song's twin when
     /// Spotify doesn't say its ISRC), or nil.
-    public static func songID(title: String, artist: String, durationMs: Int?, tokens: Tokens,
-                              session: URLSession = .shared) async throws -> String? {
+    /// `tolerance`: how far the lengths may differ (YouTube Music gives whole seconds).
+    public static func songID(title: String, artist: String, durationMs: Int?, tolerance: Int = durationTolerance,
+                              tokens: Tokens, session: URLSession = .shared) async throws -> String? {
         var comps = URLComponents(string: "https://amp-api.music.apple.com/v1/catalog/\(tokens.storefront)/search")!
         let firstArtist = artist.split(separator: ",").first.map(String.init) ?? artist
         comps.queryItems = [.init(name: "term", value: "\(title) \(firstArtist)"), .init(name: "types", value: "songs"),
@@ -104,7 +105,7 @@ public enum AppleMusicLyrics {
         let (data, response) = try await session.data(for: r)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         switch status {
-        case 200: return songID(fromSearch: data, title: title, artist: firstArtist, durationMs: durationMs)
+        case 200: return songID(fromSearch: data, title: title, artist: firstArtist, durationMs: durationMs, tolerance: tolerance)
         case 401: throw Failure.developerTokenRejected
         case 403: throw Failure.userTokenRejected
         default: throw Failure.http(status)
@@ -113,7 +114,8 @@ public enum AppleMusicLyrics {
 
     /// Same length (to the second), same title (ignoring "(Remastered)"-style suffixes, case, accents)
     /// and the first artist named.
-    static func songID(fromSearch data: Data, title: String, artist: String, durationMs: Int?) -> String? {
+    static func songID(fromSearch data: Data, title: String, artist: String, durationMs: Int?,
+                       tolerance: Int = durationTolerance) -> String? {
         struct Doc: Decodable {
             struct R: Decodable {
                 struct Songs: Decodable {
@@ -134,7 +136,7 @@ public enum AppleMusicLyrics {
         }
         guard let durationMs, let songs = (try? JSONDecoder().decode(Doc.self, from: data))?.results.songs?.data else { return nil }
         return songs.first { s in
-            guard let a = s.attributes, let d = a.durationInMillis, abs(d - durationMs) <= durationTolerance else { return false }
+            guard let a = s.attributes, let d = a.durationInMillis, abs(d - durationMs) <= tolerance else { return false }
             return norm(a.name ?? "") == norm(title) && norm(a.artistName ?? "").contains(norm(artist))
         }?.id
     }
@@ -151,7 +153,7 @@ public enum AppleMusicLyrics {
 
     /// Two services' files of one recording rarely agree to the millisecond, so "matches" is within
     /// half a second: the same length to the second, as both apps show it.
-    static let durationTolerance = 500
+    public static let durationTolerance = 500
 
     static func songID(fromISRCResponse data: Data, durationMs: Int?) -> String? {
         struct Doc: Decodable {

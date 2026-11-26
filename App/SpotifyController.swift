@@ -17,10 +17,15 @@ enum SpotifyConfig {
 @MainActor
 final class SpotifyController: NSObject, ObservableObject {
     @Published private(set) var isLoggedIn = false
+    /// Tapping a line can jump Spotify: false for logins from before that permission was asked for
+    /// (Settings then offers Reconnect).
+    @Published private(set) var canSeek = false
 
     private let auth = SpotifyAuth(clientID: SpotifyConfig.clientID, redirectURI: SpotifyConfig.redirectURI)
     private lazy var client = SpotifyClient(auth: auth)
-    private var tokens: SpotifyTokens? { didSet { isLoggedIn = tokens != nil; persist() } }
+    private var tokens: SpotifyTokens? {
+        didSet { isLoggedIn = tokens != nil; canSeek = tokens?.canSeek == true; persist() }
+    }
     private var webSession: ASWebAuthenticationSession?
 
     private static let keychainService = "carlyrics.spotify"
@@ -88,6 +93,17 @@ final class SpotifyController: NSObject, ObservableObject {
             // Access token rejected — refresh once and retry.
             let fresh = try await refreshed(current)
             return try await client.currentlyPlaying(accessToken: fresh.accessToken)
+        }
+    }
+
+    /// Jump Spotify's playback (tapping a lyric line), refreshing the token if needed.
+    func seek(toMs ms: Int) async throws {
+        guard var current = tokens else { throw AuthError.notLoggedIn }
+        if current.isExpired(now: Date()) { current = try await refreshed(current) }
+        do {
+            try await client.seek(positionMs: ms, accessToken: current.accessToken)
+        } catch SpotifyClient.SpotifyError.unauthorized {
+            try await client.seek(positionMs: ms, accessToken: try await refreshed(current).accessToken)
         }
     }
 

@@ -17,7 +17,7 @@ struct SettingsView: View {
                         ForEach(NowPlayingCoordinator.SourceMode.allCases) { Text($0.label).tag($0) }
                     }
                 } footer: {
-                    Text("Auto reads Apple Music, then Spotify.")
+                    Text("Auto reads whatever is playing: Apple Music, Spotify or YouTube Music.")
                 }
 
                 Section {
@@ -65,6 +65,7 @@ struct SettingsView: View {
                 AppleMusicLyricsSection(account: coordinator.appleAccount)
 
                 spotifySection
+                YouTubeMusicSection(source: coordinator.youTube)
 
                 Section {
                     NavigationLink("Diagnostics") { DiagnosticsView() }
@@ -90,33 +91,39 @@ struct SettingsView: View {
         )
     }
 
+    private func connectSpotify() {
+        Task {
+            do {
+                try await coordinator.spotify.login()
+                spotifyError = nil
+            } catch ASWebAuthenticationSessionError.canceledLogin {
+                spotifyError = nil // closed the sheet: not an error
+            } catch {
+                spotifyError = "Spotify login failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
     @ViewBuilder private var spotifySection: some View {
         Section {
             if !SpotifyConfig.isConfigured {
                 Label("Add a Spotify Client ID in SpotifyConfig to enable.", systemImage: "info.circle")
                     .foregroundStyle(.secondary)
             } else if coordinator.spotify.isLoggedIn {
+                if !coordinator.spotify.canSeek {
+                    // Logins from before tap-to-jump lack the playback permission; signing in again adds it.
+                    Button("Reconnect Spotify to Tap Lines") { connectSpotify() }
+                }
                 Button("Disconnect Spotify", role: .destructive) { coordinator.spotify.logout() }
             } else {
-                Button("Connect Spotify") {
-                    Task {
-                        do {
-                            try await coordinator.spotify.login()
-                            spotifyError = nil
-                        } catch ASWebAuthenticationSessionError.canceledLogin {
-                            spotifyError = nil // closed the sheet: not an error
-                        } catch {
-                            spotifyError = "Spotify login failed: \(error.localizedDescription)"
-                        }
-                    }
-                }
+                Button("Connect Spotify") { connectSpotify() }
             }
             if let spotifyError { Text(spotifyError).foregroundStyle(.red) }
             SpotifyLyricsRow(account: coordinator.spotifyLyrics)
         } header: {
             Text("Spotify")
         } footer: {
-            Text("Connect Spotify tells Car Lyrics what's playing; it opens Safari's sign-in, so every option works there. Spotify's own lyrics need Spotify's web sign-in as well: email, an emailed code, Apple or Google. Passkeys don't work inside apps. Songs without them use LRCLIB.")
+            Text("Connect Spotify tells Car Lyrics what's playing and lets a tapped line jump the song (Premium); it opens Safari's sign-in, so every option works there. Spotify's own lyrics need Spotify's web sign-in as well: email, an emailed code, Apple or Google. Passkeys don't work inside apps. Songs without them use LRCLIB.")
         }
     }
 }
@@ -138,6 +145,9 @@ private struct AppleMusicLyricsSection: View {
                             signingIn = true
                         }
                     }
+                    // On the button, not the Section: a Section hands its modifiers to every row, and
+                    // two sheets on one binding present and dismiss each other (seen 2026-11-26).
+                    .sheet(isPresented: $signingIn) { signInSheet }
                 }
                 if account.via != nil {
                     Button("Disconnect Apple Music Lyrics", role: .destructive) { Task { await account.disconnect() } }
@@ -148,7 +158,9 @@ private struct AppleMusicLyricsSection: View {
         } footer: {
             Text("Word-by-word lyrics from Apple Music, using the Apple Music account already on this phone, so there's nothing to sign in to. If Apple refuses it, sign in here instead: tap Sign In on Apple's page, then your password and the code (passkeys don't work inside apps). Songs Apple has no lyrics for use LRCLIB.")
         }
-        .sheet(isPresented: $signingIn) {
+    }
+
+    private var signInSheet: some View {
             SignInSheet(title: "Apple Music",
                         web: SignInWebView(url: URL(string: "https://music.apple.com/us/browse")!, userAgent: SignInWebView.safariUserAgent))
                 .task {
@@ -162,6 +174,42 @@ private struct AppleMusicLyricsSection: View {
                         try? await Task.sleep(for: .seconds(1))
                     }
                 }
+    }
+}
+
+/// YouTube Music: what's playing comes from its history, so it needs the YouTube Music login.
+private struct YouTubeMusicSection: View {
+    @ObservedObject var source: YouTubeMusicSource
+    @State private var signingIn = false
+
+    var body: some View {
+        Section {
+            if source.isSignedIn {
+                LabeledContent("YouTube Music", value: "Signed in")
+                Button("Sign Out of YouTube Music", role: .destructive) { Task { await source.signOut() } }
+            } else {
+                Button("Sign In to YouTube Music") { signingIn = true }
+                    .sheet(isPresented: $signingIn) {
+                        SignInSheet(title: "YouTube Music",
+                                    web: SignInWebView(url: YouTubeMusicSource.signInURL, userAgent: SignInWebView.safariUserAgent))
+                            .task {
+                                // Signed in once Google sets YouTube's login cookie (after its redirect lands).
+                                while !Task.isCancelled {
+                                    await source.refreshSignIn()
+                                    if source.isSignedIn {
+                                        try? await Task.sleep(for: .seconds(2)) // let the redirect to YouTube Music land
+                                        signingIn = false
+                                        return
+                                    }
+                                    try? await Task.sleep(for: .seconds(1))
+                                }
+                            }
+                    }
+            }
+        } header: {
+            Text("YouTube Music")
+        } footer: {
+            Text("iOS doesn't tell apps what YouTube Music is playing, so Car Lyrics reads your YouTube Music history (keep it on) and times each song from the moment it starts. Sign in with your password or a prompt on your phone: if Google tries a passkey, tap Try another way. After you drag the slider in YouTube Music, tap the line being sung.")
         }
     }
 }

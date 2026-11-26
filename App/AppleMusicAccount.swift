@@ -66,7 +66,10 @@ final class AppleMusicAccount: ObservableObject {
                 how = "isrc=\(isrc)"
             }
             if id == nil {
-                id = try await AppleMusicLyrics.songID(title: track.title, artist: track.artist, durationMs: track.durationMs, tokens: current)
+                // YouTube Music gives whole seconds, so its lengths can be up to a second off Apple's.
+                let tolerance = track.source == .youtubeMusic ? 1000 : AppleMusicLyrics.durationTolerance
+                id = try await AppleMusicLyrics.songID(title: track.title, artist: track.artist, durationMs: track.durationMs,
+                                                       tolerance: tolerance, tokens: current)
                 how += id == nil ? "" : " search"
             }
             guard let id else { throw AppleMusicLyrics.Failure.notFound } // not on Apple Music, or not the same length

@@ -16,7 +16,7 @@ final class NowPlayingCoordinator: ObservableObject {
     /// the background, where no scene (and no `onAppear`) exists to create or start one.
     static let shared = NowPlayingCoordinator()
     enum SourceMode: String, CaseIterable, Identifiable {
-        case auto, appleMusic, spotify
+        case auto, appleMusic, spotify, youtubeMusic
         #if targetEnvironment(simulator)
         case demo
         #endif
@@ -26,6 +26,7 @@ final class NowPlayingCoordinator: ObservableObject {
             case .auto: "Auto"
             case .appleMusic: "Apple Music"
             case .spotify: "Spotify"
+            case .youtubeMusic: "YouTube Music"
             #if targetEnvironment(simulator)
             case .demo: "Demo"
             #endif
@@ -86,6 +87,9 @@ final class NowPlayingCoordinator: ObservableObject {
     /// on these instead of on the 1s tick. Empty when paused or unsynced (the view then falls back
     /// to `currentLineIndex`). Published only when it actually changes (anchor/offset/song).
     @Published private(set) var lineDates: [Date] = []
+    /// YouTube Music's position is unknown (a drag inside YouTube Music, or a song joined midway): the
+    /// lyrics show unsynced and ask for a tap on the line being sung, which jumps the song there.
+    @Published private(set) var positionUnknown = false
     /// Pre-blurred artwork for the lyrics background (blurred once per song, not live per frame).
     @Published private(set) var artworkBackdrop: UIImage?
     @Published private(set) var isCarPlayConnected = false
@@ -155,6 +159,7 @@ final class NowPlayingCoordinator: ObservableObject {
     let spotify = SpotifyController()
     let appleAccount = AppleMusicAccount()
     let spotifyLyrics = SpotifyLyricsAccount()
+    let youTube = YouTubeMusicSource.shared
     private let keepAlive = BackgroundKeepAlive()
     #if targetEnvironment(simulator)
     private let demoSource = DemoSource()
@@ -230,6 +235,7 @@ final class NowPlayingCoordinator: ObservableObject {
     func start() {
         appleMusic.start()
         keepAlive.start() // location keep-alive runs in every mode
+        youTube.start()
         handleCarPlayRouteChange()
         guard loopTask == nil else { return }
         EventLog.log("app start state=\(Self.appState) widgetGroup=\(AppGroup.url != nil) build=\(Bundle.main.infoDictionary?["CFBundleVersion"] ?? "?") mode=\(sourceMode.rawValue) carplay=\(isCarPlayConnected)")
@@ -285,17 +291,44 @@ final class NowPlayingCoordinator: ObservableObject {
         refreshActivityDiagnostics()
     }
 
-    /// Tapping a lyric line jumps Apple Music to where that line shows (the other sources can't seek).
-    var canSeek: Bool { track?.source == .appleMusic && lyrics?.isSynced == true }
+    /// Tapping a lyric line jumps the song to where that line shows, as in Apple Music's own lyrics.
+    /// Spotify needs the playback permission (logins from before it was asked for can't).
+    var canSeek: Bool {
+        guard lyrics?.isSynced == true, let source = track?.source else { return false }
+        switch source {
+        case .appleMusic, .youtubeMusic: return true
+        case .spotify: return spotify.canSeek
+        }
+    }
 
     func seek(toLine index: Int) {
-        guard canSeek, let lyrics, lyrics.lines.indices.contains(index) else { return }
+        guard canSeek, let lyrics, lyrics.lines.indices.contains(index), let source = track?.source else { return }
         // A line shows when position + user offset + file offset reaches its time (see SyncEngine).
-        let positionMs = lyrics.lines[index].timeMs - lyrics.offsetMs - userOffsetMs
-        appleMusic.seek(toMs: positionMs)
-        songStartAnchor = Date().addingTimeInterval(-Double(max(0, positionMs)) / 1000) // highlight jumps now
+        let positionMs = max(0, lyrics.lines[index].timeMs - lyrics.offsetMs - userOffsetMs)
+        let now = Date()
+        switch source {
+        case .appleMusic:
+            appleMusic.seek(toMs: positionMs)
+        case .youtubeMusic:
+            youTube.seek(toMs: positionMs)
+            positionUnknown = false
+        case .spotify:
+            Task { [spotify] in
+                do { try await spotify.seek(toMs: positionMs) } catch { EventLog.log("spotify seek failed: \(error)") }
+            }
+            // Until Spotify's next answer (held off a moment so it reports the new spot).
+            if var anchor = spotifyAnchor {
+                anchor.positionMs = positionMs
+                anchor.sampledAt = now
+                anchor.isPlaying = true
+                spotifyAnchor = anchor
+            }
+            spotifyStarts = []
+            lastSpotifyPoll = now.addingTimeInterval(1)
+        }
+        songStartAnchor = now.addingTimeInterval(-Double(positionMs) / 1000) // highlight jumps now
         refreshLineDates()
-        EventLog.log("seek to line \(index + 1) by tap")
+        EventLog.log("seek to line \(index + 1) by tap [\(source.rawValue)]")
     }
 
     /// "Car Lyrics froze" (Siri / Shortcuts): a marked snapshot in the log at the moment the user
@@ -321,6 +354,7 @@ final class NowPlayingCoordinator: ObservableObject {
     /// (or the Start intent) brings it all back via `start()`.
     func stopFromIntent() async {
         EventLog.log("intent: stop lyrics")
+        youTube.stopped()
         loopTask?.cancel()
         loopTask = nil
         keepAlive.stop()
@@ -409,7 +443,7 @@ final class NowPlayingCoordinator: ObservableObject {
             currentSongHasOwnOffset = songOffsets[playback.track.identityKey] != nil
             userOffsetMs = songOffsets[playback.track.identityKey] ?? defaultOffsetMs
             albumColor = playback.track.source == .appleMusic ? appleMusic.artworkColor() : nil
-            if playback.track.source == .spotify { loadSpotifyArtwork(for: playback.track) }
+            if playback.track.artworkURL != nil { loadArtwork(for: playback.track) }
             artwork = playback.track.source == .appleMusic ? appleMusic.artworkImage() : nil
             artworkBackdrop = Self.backdrop(from: artwork)
             #if targetEnvironment(simulator)
@@ -422,6 +456,11 @@ final class NowPlayingCoordinator: ObservableObject {
             loadLyrics(for: playback.track)
         }
         lastPlayback = playback
+        let unknown = playback.track.source == .youtubeMusic && !youTube.positionKnown
+        if unknown != positionUnknown {
+            positionUnknown = unknown
+            EventLog.log("youtube music position \(unknown ? "unknown: asking for a tap" : "known")")
+        }
 
         let posNow = playback.extrapolatedPositionMs(now: Date())
         await updateSync(positionMs: posNow, playback: playback)
@@ -434,11 +473,16 @@ final class NowPlayingCoordinator: ObservableObject {
             return appleMusic.sampleNow()
         case .spotify:
             return await spotifyPlayback()
+        case .youtubeMusic:
+            return youTube.sampleNow()
         case .auto:
-            // Local Apple Music read is cheap; prefer it when actually playing.
+            // Whatever is playing: Apple Music (a cheap local read), Spotify, then YouTube Music, which
+            // is only looked at when neither plays (it can't tell apps apart). Paused: the last one.
             if let am = appleMusic.sampleNow(), am.isPlaying { return am }
-            if spotify.isLoggedIn, let sp = await spotifyPlayback() { return sp }
-            return appleMusic.sampleNow()
+            let sp = spotify.isLoggedIn ? await spotifyPlayback() : nil
+            if let sp, sp.isPlaying { return sp }
+            if let yt = youTube.sampleNow(), yt.isPlaying || track?.source == .youtubeMusic { return yt }
+            return sp ?? appleMusic.sampleNow()
         #if targetEnvironment(simulator)
         case .demo:
             return demoSource.sampleNow()
@@ -526,6 +570,8 @@ final class NowPlayingCoordinator: ObservableObject {
         case .spotify:
             if appleAccount.enabled { names.append("apple-twin") }
             if spotifyLyrics.isConnected, track.catalogID?.isEmpty == false { names.append("spotify") }
+        case .youtubeMusic:
+            if appleAccount.enabled { names.append("apple-twin") } // by title + artist, within a second
         }
         guard let source = cached?.source else { return names }
         // Build 12 cached Apple's lyrics without the lyricOffset fix (no "leadingSilence=" note): once more.
@@ -624,9 +670,9 @@ final class NowPlayingCoordinator: ObservableObject {
         }
     }
 
-    /// Spotify's album art (Apple Music's comes from MediaPlayer): the lyrics screen's backdrop, and the
-    /// Album background's colour and blurred art on the lock screen and CarPlay.
-    private func loadSpotifyArtwork(for song: NowPlayingTrack) {
+    /// Spotify's and YouTube Music's album art (Apple Music's comes from MediaPlayer): the lyrics
+    /// screen's backdrop, and the Album background's colour and blurred art on the lock screen and CarPlay.
+    private func loadArtwork(for song: NowPlayingTrack) {
         guard let url = song.artworkURL.flatMap(URL.init(string:)) else { return }
         Task { [weak self] in
             guard let (data, _) = try? await URLSession.shared.data(from: url), let image = UIImage(data: data),
@@ -641,12 +687,17 @@ final class NowPlayingCoordinator: ObservableObject {
     // MARK: Sync + Live Activity
 
     private func updateSync(positionMs: Int, playback: PlaybackState) async {
-        guard let lyrics, lyrics.isSynced else {
-            // No synced lyrics yet (still fetching) or none exist. Keep the ONE activity alive and
+        guard let lyrics, lyrics.isSynced, !positionUnknown else {
+            // No synced lyrics yet (still fetching) or none exist, or YouTube Music's position is unknown. Keep the ONE activity alive and
             // just retitle it to this song — don't end it. Ending + re-requesting can't restart a
             // Live Activity from the background, which is what made song changes drop the widget.
             if currentLineIndex != nil { currentLineIndex = nil }
-            let state = activityState(playback, positionMs: positionMs, current: "", next: nil)
+            var state = activityState(playback, positionMs: positionMs, current: "", next: nil)
+            if positionUnknown, lyrics?.isSynced == true {
+                state.currentLine = "Tap the line being sung in Car Lyrics"
+                state.songStart = nil // no clock: it would run from a guess
+                state.pausedPositionMs = nil
+            }
             refreshLineDates()
             publishWidgetFeed()
             await liveActivity.ensureActivity(songId: playback.track.identityKey, initial: state)
@@ -931,7 +982,7 @@ final class NowPlayingCoordinator: ObservableObject {
 
     private func refreshLineDates() {
         var dates: [Date] = []
-        if let start = songStartAnchor, let lyrics, lyrics.isSynced, lastPlayback?.isPlaying == true {
+        if let start = songStartAnchor, let lyrics, lyrics.isSynced, lastPlayback?.isPlaying == true, !positionUnknown {
             let shiftMs = Double(engine.userOffsetMs + lyrics.offsetMs)
             dates = lyrics.lines.map { start.addingTimeInterval((Double($0.timeMs) - shiftMs) / 1000) }
         }
